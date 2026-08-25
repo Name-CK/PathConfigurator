@@ -19,10 +19,10 @@
 | C/C++ 扩展 | 建议 | 头文件跳转、代码补全与错误提示：[C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) |
 | Cortex-Debug 扩展 | 调试需要 | 在 VS Code 中通过 OpenOCD 调试 STM32：[Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) |
 | CMake Tools 扩展 | 建议 | 提供 CMake 预设、配置和构建的状态栏入口：[CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) |
-| Task Explorer 扩展 | 可选 | 将 `tasks.json` 中的任务显示在侧边栏：[Task Explorer](https://marketplace.visualstudio.com/items?itemName=spmeesseman.vscode-taskexplorer) |
+| vscode-tasks 扩展 | 可选 | 为 `tasks.json` 中的任务提供快捷运行入口：[actboy168/vscode-tasks](https://github.com/actboy168/vscode-tasks) |
 | CMSIS-DAP、ST-LINK 或其他 OpenOCD 支持的调试器 | 烧录/调试需要 | 将调试器以 SWD 连接到目标板；CMSIS-DAP 是模板的默认选择。 |
 
-`tasks.json` 由 VS Code 内置支持，**不安装 Task Explorer 也能运行任务**。安装它只是为了在侧边栏中更方便地点击任务。STM32CubeCLT 已包含本流程所需的 CMake、Ninja、编译器和 GDB，一般不需要另行安装这些工具。
+`tasks.json` 由 VS Code 内置支持，**不安装 vscode-tasks 也能运行任务**。安装它只是为了更方便地点击任务。STM32CubeCLT 已包含本流程所需的 CMake、Ninja、编译器和 GDB，一般不需要另行安装这些工具。
 
 ### 2. 用 CubeMX 生成 CMake 工程
 
