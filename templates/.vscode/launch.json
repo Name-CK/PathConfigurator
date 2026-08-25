@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug With OpenOCD",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}/build/Debug/${config:CustomCfg.projectName}.elf",
+      "preLaunchTask": "Build Debug",
+      "servertype": "openocd",
+      "serverpath": "${config:CustomCfg.openocdPath}",
+      "configFiles": [
+        "interface/${config:CustomCfg.openocd.interface}.cfg",
+        "target/${config:CustomCfg.openocd.target}"
+      ],
+      "openOCDLaunchCommands": [
+        "transport select swd"
+      ],
+      "gdbPath": "${config:CustomCfg.gdbPath}",
+      "device": "${config:CustomCfg.device}",
+      "svdFile": "${config:CustomCfg.svdFile}",
+      "runToEntryPoint": "main"
+    }
+  ]
+}

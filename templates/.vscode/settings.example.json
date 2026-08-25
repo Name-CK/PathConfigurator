@@ -1,0 +1,21 @@
+{
+  "cmake.cmakePath": "C:/your/path/cmake.exe",
+  "cmake.useCMakePresets": "auto",
+  "cmake.generator": "Ninja",
+  "cmake.sourceDirectory": "${workspaceFolder}/ToolChain",
+  "cmake.buildDirectory": "${workspaceFolder}/ToolChain/build/${buildType}",
+  "cmake.configureOnOpen": false,
+  "cmake.configureSettings": {
+    "CMAKE_MAKE_PROGRAM": "C:/your/path/ninja.exe",
+    "STARM_CLANG_PATH": "C:/your/path/starm-clang.exe",
+    "CMAKE_TOOLCHAIN_FILE": "${workspaceFolder}/ToolChain/cmake/starm-clang.cmake"
+  },
+  "cmake.environment": {
+    "PATH": "C:/your/path;${env:PATH}"
+  },
+  "cmake.preferredGenerators": [
+    "Ninja"
+  ],
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/ToolChain/build/Debug/compile_commands.json"
+}

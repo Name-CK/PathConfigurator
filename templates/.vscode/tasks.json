@@ -1,0 +1,122 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure Local Toolchain (GUI)",
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/PathConfigurator.exe",
+      "args": [
+        "/workspace",
+        "${workspaceFolder}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": false,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "focus": false,
+        "panel": "shared",
+        "close": true
+      }
+    },
+    {
+      "label": "CMake: Configure Debug",
+      "type": "process",
+      "command": "${config:CustomCfg.cmakePath}",
+      "args": [
+        "--preset",
+        "Debug-Local"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Configure Release",
+      "type": "process",
+      "command": "${config:CustomCfg.cmakePath}",
+      "args": [
+        "--preset",
+        "Release-Local"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build Debug",
+      "type": "process",
+      "command": "${config:CustomCfg.cmakePath}",
+      "args": [
+        "--build",
+        "--preset",
+        "Debug-Local"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "dependsOn": "CMake: Configure Debug",
+      "dependsOrder": "sequence",
+      "problemMatcher": "$gcc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Build Release",
+      "type": "process",
+      "command": "${config:CustomCfg.cmakePath}",
+      "args": [
+        "--build",
+        "--preset",
+        "Release-Local"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "dependsOn": "CMake: Configure Release",
+      "dependsOrder": "sequence",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Flash Debug (OpenOCD)",
+      "type": "process",
+      "command": "${config:CustomCfg.openocdPath}",
+      "args": [
+        "-f",
+        "interface/${config:CustomCfg.openocd.interface}.cfg",
+        "-c",
+        "transport select swd",
+        "-f",
+        "target/${config:CustomCfg.openocd.target}",
+        "-c",
+        "program build/Debug/${config:CustomCfg.projectName}.elf verify reset exit"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "dependsOn": "Build Debug",
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Clean Debug",
+      "type": "process",
+      "command": "${config:CustomCfg.cmakePath}",
+      "args": [
+        "-E",
+        "remove_directory",
+        "build/Debug"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

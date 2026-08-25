@@ -1,0 +1,31 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "Clang-Debug-Local",
+      "displayName": "LLVM Clang Debug (local)",
+      "inherits": "Clang-Debug",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/your/path/LLVM/bin/clang.exe",
+        "CMAKE_CXX_COMPILER": "C:/your/path/LLVM/bin/clang++.exe",
+        "CMAKE_RC_COMPILER": "C:/your/path/LLVM/bin/llvm-rc.exe",
+        "PATHCONFIGURATOR_MSVC_INCLUDE": "C:/your/path/Microsoft Visual Studio/VC/Tools/MSVC/version/include"
+      }
+    },
+    {
+      "name": "Clang-Release-Local",
+      "displayName": "LLVM Clang Release (local)",
+      "inherits": "Clang-Release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/your/path/LLVM/bin/clang.exe",
+        "CMAKE_CXX_COMPILER": "C:/your/path/LLVM/bin/clang++.exe",
+        "CMAKE_RC_COMPILER": "C:/your/path/LLVM/bin/llvm-rc.exe",
+        "PATHCONFIGURATOR_MSVC_INCLUDE": "C:/your/path/Microsoft Visual Studio/VC/Tools/MSVC/version/include"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "Clang-Debug-Local", "configurePreset": "Clang-Debug-Local" },
+    { "name": "Clang-Release-Local", "configurePreset": "Clang-Release-Local" }
+  ]
+}

@@ -1,0 +1,11 @@
+# Local build output and CMake's host-specific configuration.
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+
+# IDE state files.
+/.vs/
+*.user
+*.suo
+*.vcxproj.user
