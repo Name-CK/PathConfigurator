@@ -3,6 +3,7 @@
 /out/
 /cmake-build-*/
 CMakeUserPresets.json
+PROGRAM_DESIGN.md
 
 # IDE state files.
 /.vs/

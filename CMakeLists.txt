@@ -51,7 +51,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND WIN32)
     target_link_options(PathConfigurator PRIVATE -fuse-ld=lld)
 endif()
 
-target_link_libraries(PathConfigurator PRIVATE user32 gdi32 kernel32 advapi32 comdlg32 shell32 ole32 oleaut32 shlwapi uxtheme comctl32 winhttp)
+target_link_libraries(PathConfigurator PRIVATE user32 gdi32 d2d1 dwrite kernel32 advapi32 comdlg32 shell32 ole32 oleaut32 shlwapi uxtheme comctl32 winhttp dwmapi)
 
 if(PATHCONFIGURATOR_BUILD_TESTS)
     enable_testing()

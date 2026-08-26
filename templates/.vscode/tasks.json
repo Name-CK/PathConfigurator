@@ -10,7 +10,14 @@
         "${workspaceFolder}"
       ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "statusbar": {
+          "label": "$(gear) 配置",
+          "detail": "配置: 启动 STM32 项目配置器，设置当前工程的工具链、OpenOCD 和 CMake 目标配置。",
+          "running": {
+            "label": "$(sync~spin) 正在配置"
+          }
+        }
       },
       "isBackground": false,
       "problemMatcher": [],
@@ -30,7 +37,10 @@
         "Debug-Local"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "hide": true
+        }
       },
       "problemMatcher": []
     },
@@ -43,7 +53,10 @@
         "Release-Local"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "hide": true
+        }
       },
       "problemMatcher": []
     },
@@ -57,7 +70,14 @@
         "Debug-Local"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "label": "$(tools) 编译",
+          "detail": "编译 Debug: 配置并编译 Debug 固件。",
+          "running": {
+            "label": "$(sync~spin) 正在编译"
+          }
+        }
       },
       "dependsOn": "CMake: Configure Debug",
       "dependsOrder": "sequence",
@@ -77,7 +97,10 @@
         "Release-Local"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "hide": true
+        }
       },
       "dependsOn": "CMake: Configure Release",
       "dependsOrder": "sequence",
@@ -98,7 +121,14 @@
         "program build/Debug/${config:CustomCfg.projectName}.elf verify reset exit"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "label": "$(zap) 烧录",
+          "detail": "烧录 Debug: 进行 Debug 任务的编译，并通过 OpenOCD 烧录、校验和复位。",
+          "running": {
+            "label": "$(sync~spin) 正在烧录"
+          }
+        }
       },
       "dependsOn": "Build Debug",
       "dependsOrder": "sequence",
@@ -114,7 +144,14 @@
         "build/Debug"
       ],
       "options": {
-        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}"
+        "cwd": "${workspaceFolder}/${config:CustomCfg.toolchainLocation}",
+        "statusbar": {
+          "label": "$(trash) 清理",
+          "detail": "清理 Debug: 删除 Debug 构建目录；下一次编译会重新配置。",
+          "running": {
+            "label": "$(sync~spin) 正在清理"
+          }
+        }
       },
       "problemMatcher": []
     }

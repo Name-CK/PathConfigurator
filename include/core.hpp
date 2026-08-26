@@ -21,14 +21,18 @@ struct ToolPaths {
     std::wstring svd;
 };
 
-// CMake 目标配置中的源文件既可以是单个文件，也可以是递归收集的目录。
+// CMake 目标配置中的源文件既可以是单个文件，也可以是递归收集的源目录。
+// virtualFolder 仅用于配置器的虚拟文件夹，不会创建磁盘目录，也不会改变 CMake 编译规则。
 struct TargetSourceEntry {
     std::wstring path;
     bool isFolder = false;
+    std::wstring virtualFolder;
 };
 
 // 这些内容属于工程构建规则，应与 project-config.json 一起提交到 Git。
 struct CMakeTargetConfig {
+    // 用 / 分隔的虚拟文件夹路径，例如 App/Protocol。空根目录不保存到此列表。
+    std::vector<std::wstring> virtualFolders;
     std::vector<TargetSourceEntry> sources;
     std::vector<std::wstring> includeDirectories;
     std::vector<std::wstring> compileDefinitions;
@@ -74,11 +78,13 @@ bool LoadSettings(const std::wstring& path, ToolPaths& tools, std::wstring& proj
 // 清理读取到的无效文件路径，并在 OpenOCD scripts 可用时检查 interface/target 配置文件。
 void SanitizeToolPaths(ToolPaths& tools);
 ValidationResult ValidateTools(const ToolPaths& tools, bool requireSvd);
+// 检查配置器生成的 Debug/Release 本机预设是否仍与当前工具链一致；忽略用户额外添加的预设。
+bool IsCMakeUserPresetsCurrent(const WorkspaceInfo& info, const ToolPaths& tools);
 // 本机默认配置：%LOCALAPPDATA%\PathConfigurator\user-settings.json。
 // 仅保存 CMake、Ninja、starm-clang、GDB、OpenOCD 和调试器 interface，不保存 SVD 或 target。
 std::wstring GetUserDefaultSettingsPath();
 bool LoadUserDefaultSettings(ToolPaths& tools, std::wstring& error);
-bool WriteUserDefaultSettings(const ToolPaths& tools, std::wstring& error);
+bool WriteUserDefaultSettings(const ToolPaths& tools, std::wstring& error, bool createBackup = false);
 bool DetectCubeClt(const std::wstring& selectedPath, ToolPaths& tools, std::wstring& cubeRoot,
                    std::wstring& report);
 // 从系统注册表查找 STM32CubeCLT，并只返回实际存在的工具路径。
@@ -91,9 +97,10 @@ std::wstring FindSvdForChip(const std::wstring& root, const std::wstring& chipTy
 // 在 .ioc 所指定的 CMake 目录读写 project-config.json，并生成 cmake/PathConfiguratorProject.cmake。
 // 保存时会在 CubeMX 的 CMakeLists.txt 中补入唯一的 include(...) 接入行。
 bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config, std::wstring& error);
-bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& config, std::wstring& error);
+bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& config, std::wstring& error,
+                            bool createBackup = false);
 bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const std::wstring& projectName,
                         const std::wstring& chipType, const std::wstring& svd, bool fromExample,
-                        std::wstring& error);
+                        std::wstring& error, bool createBackup = false);
 
 } // namespace pathconfig

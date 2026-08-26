@@ -95,7 +95,7 @@ E:\Tools\OpenOCD
 
 本程序将这些本机路径保存到 `.vscode/settings.json` 和 `CMakeUserPresets.json`。这两个文件不应提交 Git；工程共用的 `tasks.json`、`launch.json`、`settings.example.json`、`project-config.json` 和 CMake 文件仍可正常提交。
 
-程序标题栏会显示当前版本。通过菜单 **帮助 -> 检查更新** 可查询 GitHub Releases 的最新稳定版本；发现新版本后可以直接打开下载页面。检查更新只读取 GitHub 的公开 Release 信息，不会上传工程文件或本机配置。
+程序启动时会在后台检查 GitHub Releases；仅在发现新版本时于右上角显示提示。通过菜单 **其它 -> 关于** 可查看当前版本和仓库地址，并立即重新检查更新；状态标签会显示“当前已是最新版”“当前版本较旧”或“检查更新失败”。检查更新只读取 GitHub 的公开 Release 信息，不会上传工程文件或本机配置。
 
 对于 STM32H7，CubeMX/CMSIS 会把 st-arm-clang（Clang）识别为 GCC，并对一个 Clang 不支持的 CMSIS 属性给出兼容警告。配置器会在工程的 `cmake/PathConfiguratorCompilerCompat.cmake` 中仅对 Clang 关闭该警告，并在 CubeMX 源码子目录之前接入它。这不修改任何 CubeMX/CMSIS 头文件；该模块应提交 Git，后续重新生成代码不需要再次运行配置器。
 
@@ -200,9 +200,13 @@ Cortex-Debug 的关键配置示例：
 - 编译宏
 - 链接目录
 
-路径统一以工程根目录显示，例如 `\App`、`\BSP`。双击已有行可直接编辑；双击最后的空白行可新增。也可使用“添加文件...”或“添加文件夹...”。
+路径统一以工程根目录显示，例如 `\App`、`\BSP`。双击已有行可直接编辑；双击最后的空白行可新增。
 
-选择源文件夹后，生成的 CMake 使用 `file(GLOB_RECURSE ... CONFIGURE_DEPENDS)` 递归收集 C、C++ 和汇编源文件。保存时，程序会在 `.ioc` 所指定的 CMake 目录中生成并更新：
+在“目标文件 / 文件夹”类别中，左侧是**工程树**。根节点下可创建任意层级的**虚拟文件夹**，并将源文件或**源目录**加入当前虚拟文件夹。虚拟文件夹以蓝色文字显示；源目录以金色文字显示；从源目录按需展开的实际下级目录称为**子目录**，以浅金色文字显示。展开源目录或子目录时才读取下一层，避免大型工程启动时遍历全部目录。点击源目录或子目录后，右侧只读显示当前实际目录直接包含的文件和目录；这里不会重命名、移动或修改任何工程配置。虚拟文件夹只写入 `project-config.json`，不会创建、移动或重命名磁盘目录；双击虚拟文件夹只能重命名工程内的分组。双击普通配置列表行编辑的是 CMake 指向的路径或宏，不会重命名磁盘文件或目录。
+
+删除 CMake 源文件、源目录配置或虚拟文件夹时，程序只显示一次三选项确认框：选择“是”会移除工程配置并将列出的实际文件或目录移到回收站；选择“否”仅移除工程配置；选择“取消”不做任何操作。删除虚拟文件夹会同时删除其下级虚拟文件夹及已归属的配置项；虚拟文件夹本身不对应任何磁盘目录，只有选择“是”时才会处理列出的实际源文件或目录。在源目录或子目录的只读查看中，选择“是”才会将选中的实际文件或目录移到回收站；该视图没有对应的工程配置，因此选择“否”不会执行删除。
+
+选择源目录后，生成的 CMake 使用 `file(GLOB_RECURSE ... CONFIGURE_DEPENDS)` 递归收集 C、C++ 和汇编源文件。保存时，程序会在 `.ioc` 所指定的 CMake 目录中生成并更新：
 
 ```text
 project-config.json
@@ -215,7 +219,7 @@ cmake/PathConfiguratorProject.cmake
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorProject.cmake")
 ```
 
-这三个文件属于工程构建规则，应提交 Git。新增或删除递归目录内的源文件后，重新执行 CMake Configure。
+这三个文件属于工程构建规则，应提交 Git。新增或删除源目录及其子目录中的源文件后，重新执行 CMake Configure。
 
 首次确认工具链配置还会生成 `cmake/PathConfiguratorCompilerCompat.cmake`，并在同一目录的 `CMakeLists.txt` 中于 `add_executable(...)` 与 `add_subdirectory(cmake/stm32cubemx)` 之前加入一次 `include(...)`。它仅在 st-arm-clang/Clang 下抑制 CubeMX H7 CMSIS 的 `optimize("Os")` 兼容警告，不改动 CMSIS 头文件；这个文件同样应提交 Git。
 
@@ -228,7 +232,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorProject.cmake")
 | 首次保存目标配置时修改 | CMakeLists.txt：只补入一次 `include(...)` |
 | 不修改 | 系统环境变量、`.ioc`、CubeMX 生成的源代码、OpenOCD 配置文件、固件内容 |
 
-写入前程序会创建临时文件；写入成功后替换原文件并保留 `.bak` 备份。
+点击“生成”“重建”“修改”或保存默认配置时，程序会先列出本次会修改或创建的文件，并询问是否生成 `.bak` 备份。选择“是”时，已有文件会在原子替换前创建备份；选择“否”时直接原子写入，不保留备份；选择“取消”或关闭备份窗口时不修改任何文件。写入成功后主窗口保持打开，并在状态栏提示结果。
 
 ## 命令行参数
 

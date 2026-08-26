@@ -49,7 +49,7 @@ bool ReadBytes(const std::wstring& path, std::string& data) {
     return true;
 }
 
-bool WriteBytesAtomic(const std::wstring& path, const std::string& data) {
+bool WriteBytesAtomic(const std::wstring& path, const std::string& data, bool createBackup) {
     std::wstring temp = path + L".tmp";
     HANDLE h = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
@@ -58,8 +58,13 @@ bool WriteBytesAtomic(const std::wstring& path, const std::string& data) {
     FlushFileBuffers(h);
     CloseHandle(h);
     if (!ok || written != data.size()) { DeleteFileW(temp.c_str()); return false; }
-    std::wstring backup = path + L".bak";
-    if (FileExists(path)) CopyFileW(path.c_str(), backup.c_str(), FALSE);
+    if (createBackup && FileExists(path)) {
+        const std::wstring backup = path + L".bak";
+        if (!CopyFileW(path.c_str(), backup.c_str(), FALSE)) {
+            DeleteFileW(temp.c_str());
+            return false;
+        }
+    }
     if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(temp.c_str()); return false;
     }
@@ -238,6 +243,57 @@ bool FindJsonObjectEnd(const std::string& document, size_t begin, size_t limit, 
     return false;
 }
 
+bool FindNamedJsonObject(const std::string& document, const char* arrayKey, const wchar_t* name,
+                         std::string& object) {
+    object.clear();
+    size_t begin = 0, end = 0;
+    if (!FindJsonArray(document, arrayKey, begin, end)) return false;
+    for (size_t p = begin; p < end;) {
+        p = SkipSpace(document, p);
+        if (p >= end) break;
+        if (document[p] == ',') { ++p; continue; }
+        if (document[p] != '{') return false;
+        size_t objectEnd = 0;
+        if (!FindJsonObjectEnd(document, p, end, objectEnd)) return false;
+        std::string candidate = document.substr(p, objectEnd - p);
+        std::wstring candidateName;
+        if (FindJsonString(candidate, "name", candidateName) && _wcsicmp(candidateName.c_str(), name) == 0) {
+            object = std::move(candidate);
+            return true;
+        }
+        p = objectEnd;
+    }
+    return false;
+}
+
+bool PresetStringMatches(const std::string& preset, const char* key, const std::wstring& expected) {
+    std::wstring actual;
+    return FindJsonString(preset, key, actual) && actual == expected;
+}
+
+bool PresetPathMatches(const std::string& preset, const char* key, const std::wstring& expected) {
+    std::wstring actual;
+    return FindJsonString(preset, key, actual) &&
+        _wcsicmp(NormalizePath(actual).c_str(), NormalizePath(expected).c_str()) == 0;
+}
+
+bool HasCurrentConfigurePreset(const std::string& document, const wchar_t* name, const wchar_t* inheritedPreset,
+                               const wchar_t* buildDirectory, const ToolPaths& tools,
+                               const std::wstring& environmentPath) {
+    std::string preset;
+    return FindNamedJsonObject(document, "configurePresets", name, preset) &&
+        PresetStringMatches(preset, "inherits", inheritedPreset) &&
+        PresetStringMatches(preset, "binaryDir", buildDirectory) &&
+        PresetPathMatches(preset, "CMAKE_MAKE_PROGRAM", tools.ninja) &&
+        PresetStringMatches(preset, "PATH", environmentPath);
+}
+
+bool HasCurrentBuildPreset(const std::string& document, const wchar_t* name) {
+    std::string preset;
+    return FindNamedJsonObject(document, "buildPresets", name, preset) &&
+        PresetStringMatches(preset, "configurePreset", name);
+}
+
 bool ReadJsonStringArray(const std::string& document, const char* key, std::vector<std::wstring>& values) {
     values.clear();
     size_t begin = 0, end = 0;
@@ -280,13 +336,70 @@ bool ReadJsonSourceArray(const std::string& document, std::vector<TargetSourceEn
         size_t objectEnd = 0;
         if (!FindJsonObjectEnd(document, p, end, objectEnd)) return false;
         const std::string object = document.substr(p, objectEnd - p);
-        std::wstring kind, path;
+        std::wstring kind, path, virtualFolder;
         if (!FindJsonString(object, "kind", kind) || !FindJsonString(object, "path", path) || path.empty()) return false;
         if (_wcsicmp(kind.c_str(), L"file") != 0 && _wcsicmp(kind.c_str(), L"folder") != 0) return false;
-        values.push_back({path, _wcsicmp(kind.c_str(), L"folder") == 0});
+        // virtualFolder 是 v2 的可选字段。缺失时保持在根节点，兼容 v1 配置。
+        FindJsonString(object, "virtualFolder", virtualFolder);
+        values.push_back({path, _wcsicmp(kind.c_str(), L"folder") == 0, virtualFolder});
         p = objectEnd;
     }
     return true;
+}
+
+bool IsValidVirtualFolderPath(const std::wstring& value, bool allowRoot) {
+    const std::wstring path = Trim(value);
+    if (path.empty()) return allowRoot;
+    if (path.front() == L'/' || path.back() == L'/') return false;
+    size_t begin = 0;
+    while (begin < path.size()) {
+        const size_t end = path.find(L'/', begin);
+        const std::wstring segment = Trim(path.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin));
+        if (segment.empty() || segment == L"." || segment == L"..") return false;
+        for (wchar_t c : segment) {
+            if (c < 32 || c == L'\\' || c == L':' || c == L'*' || c == L'?' || c == L'"' ||
+                c == L'<' || c == L'>' || c == L'|' || c == L';' || c == L'$')
+                return false;
+        }
+        if (end == std::wstring::npos) break;
+        begin = end + 1;
+    }
+    return true;
+}
+
+std::wstring NormalizeVirtualFolderPath(const std::wstring& value) {
+    std::wstring path = Trim(value);
+    for (wchar_t& c : path) if (c == L'\\') c = L'/';
+    std::wstring normalized;
+    size_t begin = 0;
+    while (begin <= path.size()) {
+        const size_t end = path.find(L'/', begin);
+        const std::wstring segment = Trim(path.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin));
+        if (segment.empty()) return {};
+        if (!normalized.empty()) normalized += L'/';
+        normalized += segment;
+        if (end == std::wstring::npos) break;
+        begin = end + 1;
+    }
+    return normalized;
+}
+
+bool ContainsVirtualFolder(const std::vector<std::wstring>& folders, const std::wstring& value) {
+    for (const std::wstring& folder : folders)
+        if (_wcsicmp(folder.c_str(), value.c_str()) == 0) return true;
+    return false;
+}
+
+void AddVirtualFolderAndParents(std::vector<std::wstring>& folders, const std::wstring& rawValue) {
+    const std::wstring value = NormalizeVirtualFolderPath(rawValue);
+    if (value.empty()) return;
+    size_t separator = 0;
+    while (separator != std::wstring::npos) {
+        const std::wstring item = value.substr(0, separator == 0 ? value.size() : separator);
+        if (!ContainsVirtualFolder(folders, item)) folders.push_back(item);
+        separator = value.find(L'/', separator == 0 ? 0 : separator + 1);
+        if (separator == std::wstring::npos) break;
+    }
 }
 
 bool IsSafeCmakeValue(const std::wstring& value) {
@@ -316,9 +429,27 @@ std::string CmakeQuoted(const std::wstring& value) {
 
 bool ValidateCmakeTargetConfig(const CMakeTargetConfig& config, std::wstring& error) {
     error.clear();
+    std::vector<std::wstring> virtualFolders;
+    for (const std::wstring& folder : config.virtualFolders) {
+        const std::wstring normalized = NormalizeVirtualFolderPath(folder);
+        if (normalized.empty() || !IsValidVirtualFolderPath(normalized, false)) {
+            error = L"虚拟文件夹名称无效。名称可使用 / 表示层级，但不能包含路径或 CMake 特殊字符。";
+            return false;
+        }
+        if (ContainsVirtualFolder(virtualFolders, normalized)) {
+            error = L"虚拟文件夹名称重复：" + normalized;
+            return false;
+        }
+        virtualFolders.push_back(normalized);
+    }
     for (const TargetSourceEntry& source : config.sources) {
         const std::wstring path = CmakePath(source.path);
-        if (!IsSafeCmakeValue(path) || !PathIsRelativeW(path.c_str())) { error = L"源文件或源文件夹必须是相对于 .ioc 指定 CMake 目录的路径，且不能包含不支持的字符。"; return false; }
+        if (!IsSafeCmakeValue(path) || !PathIsRelativeW(path.c_str())) { error = L"源文件或源目录必须是相对于 .ioc 指定 CMake 目录的路径，且不能包含不支持的字符。"; return false; }
+        const std::wstring virtualFolder = NormalizeVirtualFolderPath(source.virtualFolder);
+        if (!source.virtualFolder.empty() && (virtualFolder.empty() || !IsValidVirtualFolderPath(virtualFolder, false))) {
+            error = L"源项的虚拟文件夹名称无效。";
+            return false;
+        }
     }
     const std::vector<std::wstring>* lists[] = {&config.includeDirectories, &config.compileDefinitions, &config.linkDirectories};
     const wchar_t* names[] = {L"头文件目录", L"编译宏", L"链接目录"};
@@ -344,7 +475,7 @@ void AppendJsonStringArray(std::string& document, const char* key, const std::ve
     document += trailingComma ? "  ],\n" : "  ]\n";
 }
 
-bool EnsureTargetConfigInclude(const WorkspaceInfo& info, std::wstring& error) {
+bool EnsureTargetConfigInclude(const WorkspaceInfo& info, std::wstring& error, bool createBackup) {
     const std::wstring cmakeListsPath = JoinPath(info.toolchainRoot, L"CMakeLists.txt");
     std::string document;
     if (!ReadBytes(cmakeListsPath, document)) { error = L"无法读取 CMakeLists.txt：" + cmakeListsPath; return false; }
@@ -354,14 +485,14 @@ bool EnsureTargetConfigInclude(const WorkspaceInfo& info, std::wstring& error) {
     const size_t pos = document.find(insertionPoint);
     if (pos != std::string::npos) document.insert(pos, include);
     else document += "\n" + include;
-    if (!WriteBytesAtomic(cmakeListsPath, document)) { error = L"无法更新 CMakeLists.txt：" + cmakeListsPath; return false; }
+    if (!WriteBytesAtomic(cmakeListsPath, document, createBackup)) { error = L"无法更新 CMakeLists.txt：" + cmakeListsPath; return false; }
     return true;
 }
 
 // CubeMX 的 H7 CMSIS 头文件以 __GNUC__ 判断 GCC 风格属性，而 st-arm-clang
 // 也会定义该宏。此模块仅在 CMake 实际选中 Clang 时抑制这一个兼容性警告。
 // 必须在 add_executable 和 CubeMX 的 stm32cubemx 子目录之前 include，才能传递给所有目标。
-bool EnsureCompilerCompatibilityModule(const WorkspaceInfo& info, std::wstring& error) {
+bool EnsureCompilerCompatibilityModule(const WorkspaceInfo& info, std::wstring& error, bool createBackup) {
     const std::wstring cmakeDirectory = JoinPath(info.toolchainRoot, L"cmake");
     const std::wstring modulePath = JoinPath(cmakeDirectory, L"PathConfiguratorCompilerCompat.cmake");
     if (!FolderExists(cmakeDirectory) && !CreateDirectoryW(cmakeDirectory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
@@ -375,7 +506,7 @@ bool EnsureCompilerCompatibilityModule(const WorkspaceInfo& info, std::wstring& 
         "if(CMAKE_C_COMPILER_ID STREQUAL \"Clang\")\n"
         "  add_compile_options(-Wno-unknown-attributes)\n"
         "endif()\n";
-    if (!WriteBytesAtomic(modulePath, module)) {
+    if (!WriteBytesAtomic(modulePath, module, createBackup)) {
         error = L"无法写入 Clang 兼容模块：" + modulePath;
         return false;
     }
@@ -409,7 +540,7 @@ bool EnsureCompilerCompatibilityModule(const WorkspaceInfo& info, std::wstring& 
         return false;
     }
     document.insert(targetPos, include);
-    if (!WriteBytesAtomic(cmakeListsPath, document)) {
+    if (!WriteBytesAtomic(cmakeListsPath, document, createBackup)) {
         error = L"无法更新 CMakeLists.txt：" + cmakeListsPath;
         return false;
     }
@@ -811,6 +942,23 @@ ValidationResult ValidateTools(const ToolPaths& tools, bool requireSvd) {
     return r;
 }
 
+bool IsCMakeUserPresetsCurrent(const WorkspaceInfo& info, const ToolPaths& tools) {
+    if (!FileExists(info.presetsPath) || !ValidateTools(tools, false).ok)
+        return false;
+
+    std::string document;
+    if (!ReadBytes(info.presetsPath, document))
+        return false;
+
+    const std::wstring environmentPath = SlashPath(GetParentPath(tools.ninja)) + L";" +
+        SlashPath(GetParentPath(tools.starmClang)) + L";" +
+        SlashPath(GetParentPath(tools.gdb)) + L";$penv{PATH}";
+    return HasCurrentConfigurePreset(document, L"Debug-Local", L"Debug", L"${sourceDir}/build/Debug", tools, environmentPath) &&
+        HasCurrentConfigurePreset(document, L"Release-Local", L"Release", L"${sourceDir}/build/Release", tools, environmentPath) &&
+        HasCurrentBuildPreset(document, L"Debug-Local") &&
+        HasCurrentBuildPreset(document, L"Release-Local");
+}
+
 bool DetectCubeClt(const std::wstring& selectedPath, ToolPaths& tools, std::wstring& cubeRoot, std::wstring& report) {
     std::wstring current = NormalizePath(selectedPath);
     if (FileExists(current)) current = GetParentPath(current);
@@ -944,7 +1092,7 @@ bool LoadUserDefaultSettings(ToolPaths& tools, std::wstring& error) {
     return true;
 }
 
-bool WriteUserDefaultSettings(const ToolPaths& configuredTools, std::wstring& error) {
+bool WriteUserDefaultSettings(const ToolPaths& configuredTools, std::wstring& error, bool createBackup) {
     error.clear();
     const std::wstring path = GetUserDefaultSettingsPath();
     if (path.empty()) { error = L"无法获取 %LOCALAPPDATA% 路径。"; return false; }
@@ -964,7 +1112,7 @@ bool WriteUserDefaultSettings(const ToolPaths& configuredTools, std::wstring& er
         document += i + 1 == ARRAY_SIZE(values) ? "\n" : ",\n";
     }
     document += "}\n";
-    if (!WriteBytesAtomic(path, document)) { error = L"无法写入默认配置：" + path; return false; }
+    if (!WriteBytesAtomic(path, document, createBackup)) { error = L"无法写入默认配置：" + path; return false; }
     return true;
 }
 
@@ -1013,7 +1161,8 @@ bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config,
         error = L"无法读取工程 CMake 配置：" + info.cmakeTargetConfigPath;
         return false;
     }
-    if (!ReadJsonSourceArray(document, config.sources) ||
+    if (!ReadJsonStringArray(document, "virtualFolders", config.virtualFolders) ||
+        !ReadJsonSourceArray(document, config.sources) ||
         !ReadJsonStringArray(document, "includeDirectories", config.includeDirectories) ||
         !ReadJsonStringArray(document, "compileDefinitions", config.compileDefinitions) ||
         !ReadJsonStringArray(document, "linkDirectories", config.linkDirectories) ||
@@ -1024,18 +1173,30 @@ bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config,
     return true;
 }
 
-bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& config, std::wstring& error) {
+bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& config, std::wstring& error, bool createBackup) {
     if (!ValidateCmakeTargetConfig(config, error)) return false;
     if (!FolderExists(info.toolchainRoot)) {
         error = L"CMake 目录不存在：" + info.toolchainRoot;
         return false;
     }
 
-    std::string json = "{\n  \"version\": 1,\n  \"sources\": [";
+    // 将源项引用的组和它们的父组一并持久化，使空虚拟文件夹也能在下次打开时显示。
+    std::vector<std::wstring> virtualFolders;
+    for (const std::wstring& folder : config.virtualFolders)
+        AddVirtualFolderAndParents(virtualFolders, folder);
+    for (const TargetSourceEntry& source : config.sources)
+        if (!source.virtualFolder.empty()) AddVirtualFolderAndParents(virtualFolders, source.virtualFolder);
+
+    std::string json = "{\n  \"version\": 2,\n";
+    AppendJsonStringArray(json, "virtualFolders", virtualFolders, true);
+    json += "  \"sources\": [";
     if (!config.sources.empty()) json += "\n";
     for (size_t i = 0; i < config.sources.size(); ++i) {
         const TargetSourceEntry& source = config.sources[i];
-        json += "    {\"kind\": \"" + std::string(source.isFolder ? "folder" : "file") + "\", \"path\": \"" + JsonEscape(CmakePath(source.path)) + "\"}";
+        json += "    {\"kind\": \"" + std::string(source.isFolder ? "folder" : "file") + "\", \"path\": \"" + JsonEscape(CmakePath(source.path)) + "\"";
+        if (!source.virtualFolder.empty())
+            json += ", \"virtualFolder\": \"" + JsonEscape(NormalizeVirtualFolderPath(source.virtualFolder)) + "\"";
+        json += "}";
         json += i + 1 == config.sources.size() ? "\n" : ",\n";
     }
     json += "  ],\n";
@@ -1043,7 +1204,7 @@ bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& 
     AppendJsonStringArray(json, "compileDefinitions", config.compileDefinitions, true);
     AppendJsonStringArray(json, "linkDirectories", config.linkDirectories, false);
     json += "}\n";
-    if (!WriteBytesAtomic(info.cmakeTargetConfigPath, json)) {
+    if (!WriteBytesAtomic(info.cmakeTargetConfigPath, json, createBackup)) {
         error = L"无法写入工程 CMake 配置：" + info.cmakeTargetConfigPath;
         return false;
     }
@@ -1055,7 +1216,7 @@ bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& 
     }
     std::string cmake =
         "# 由 STM32 PathConfigurator 根据 project-config.json 生成。\n"
-        "# 源文件夹使用 GLOB_RECURSE + CONFIGURE_DEPENDS；新增/删除源文件时 CMake 会重新检查。\n"
+        "# 源目录使用 GLOB_RECURSE + CONFIGURE_DEPENDS；新增/删除源文件时 CMake 会重新检查。\n"
         "set(PathConfiguratorProject_SOURCE_FILES)\n\n";
     for (size_t i = 0; i < config.sources.size(); ++i) {
         const TargetSourceEntry& source = config.sources[i];
@@ -1094,20 +1255,21 @@ bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& 
             cmake += "  \"${CMAKE_CURRENT_LIST_DIR}/../" + Utf8FromWide(CmakePath(value)) + "\"\n";
         cmake += ")\n";
     }
-    if (!WriteBytesAtomic(info.cmakeTargetModulePath, cmake)) {
+    if (!WriteBytesAtomic(info.cmakeTargetModulePath, cmake, createBackup)) {
         error = L"无法写入 CMake 目标模块：" + info.cmakeTargetModulePath;
         return false;
     }
-    return EnsureTargetConfigInclude(info, error);
+    return EnsureTargetConfigInclude(info, error, createBackup);
 }
 
 bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const std::wstring& projectName,
-                        const std::wstring& chipType, const std::wstring& svd, bool fromExample, std::wstring& error) {
+                        const std::wstring& chipType, const std::wstring& svd, bool fromExample, std::wstring& error,
+                        bool createBackup) {
     std::wstring vscode = JoinPath(info.root, L".vscode");
     if (!FolderExists(vscode)) CreateDirectoryW(vscode.c_str(), nullptr);
     // 兼容规则属于工程构建规则并应提交 Git，不能依赖每位开发者各自的本机预设。
     // 先验证并接入它，避免无法安全修改 CMakeLists.txt 时仍写入本机配置。
-    if (!EnsureCompilerCompatibilityModule(info, error)) return false;
+    if (!EnsureCompilerCompatibilityModule(info, error, createBackup)) return false;
     std::string settings;
     if (fromExample && FileExists(info.examplePath)) {
         if (!ReadBytes(info.examplePath, settings)) { error = L"无法读取 settings.example.json"; return false; }
@@ -1143,7 +1305,7 @@ bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const
     ReplaceJsonString(settings, "CMAKE_MAKE_PROGRAM", tools.ninja);
     ReplaceJsonString(settings, "cmake.useCMakePresets", L"auto");
     ReplaceJsonString(settings, "PATH", cmakeEnvironmentPath);
-    if (!WriteBytesAtomic(info.settingsPath, settings)) { error = L"写入 .vscode/settings.json 失败"; return false; }
+    if (!WriteBytesAtomic(info.settingsPath, settings, createBackup)) { error = L"写入 .vscode/settings.json 失败"; return false; }
     std::string presets = "{\n  \"version\": 3,\n  \"configurePresets\": [\n";
     const std::wstring presetPath = SlashPath(GetParentPath(tools.ninja)) + L";" +
         SlashPath(GetParentPath(tools.starmClang)) + L";" + SlashPath(GetParentPath(tools.gdb)) + L";$penv{PATH}";
@@ -1152,7 +1314,7 @@ bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const
         presets += i ? "\n" : ",\n";
     }
     presets += "  ],\n  \"buildPresets\": [{\"name\": \"Debug-Local\", \"configurePreset\": \"Debug-Local\"}, {\"name\": \"Release-Local\", \"configurePreset\": \"Release-Local\"}]\n}\n";
-    if (!WriteBytesAtomic(info.presetsPath, presets)) { error = L"写入 CMakeUserPresets.json 失败：" + info.presetsPath; return false; }
+    if (!WriteBytesAtomic(info.presetsPath, presets, createBackup)) { error = L"写入 CMakeUserPresets.json 失败：" + info.presetsPath; return false; }
     return true;
 }
 

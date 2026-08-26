@@ -177,10 +177,26 @@ int main() {
         writtenSettings.find("personal.setting") == std::string::npos || writtenSettings.find("CustomCfg.openocdScripts") != std::string::npos ||
         writtenSettings.find("STARM_CLANG_PATH") != std::string::npos)
         return Fail(13, "settings preservation or migration failed");
+    if (pathconfig::FileExists(settingsPath + L".bak") || pathconfig::FileExists(workspace.presetsPath + L".bak"))
+        return Fail(30, "backup was created without an explicit request");
     std::string writtenPresets;
     if (!ReadText(workspace.presetsPath, writtenPresets) || writtenPresets.find("STARM_CLANG_PATH") != std::string::npos ||
         writtenPresets.find("-Wno-unknown-attributes") != std::string::npos || writtenPresets.find("$penv{PATH}") == std::string::npos)
         return Fail(24, "CMake local preset does not provide the expected Clang environment");
+    if (!pathconfig::IsCMakeUserPresetsCurrent(workspace, tools))
+        return Fail(34, "generated CMake local preset was not recognized as current");
+    const size_t configurePresetEnd = writtenPresets.find("  ],\n  \"buildPresets\"");
+    if (configurePresetEnd == std::string::npos)
+        return Fail(35, "cannot extend the CMake local preset fixture");
+    std::string presetsWithPersonalEntry = writtenPresets;
+    presetsWithPersonalEntry.insert(configurePresetEnd, ",\n    {\"name\": \"Personal-Debug\", \"inherits\": \"Debug\"}");
+    if (!WriteText(workspace.presetsPath, presetsWithPersonalEntry.c_str()) ||
+        !pathconfig::IsCMakeUserPresetsCurrent(workspace, tools))
+        return Fail(36, "personal CMake preset incorrectly invalidated local presets");
+    pathconfig::ToolPaths changedTools = tools;
+    changedTools.ninja = pathconfig::JoinPath(fixture.Path(), L"AlternateNinja\\ninja.exe");
+    if (!WriteText(changedTools.ninja, "") || pathconfig::IsCMakeUserPresetsCurrent(workspace, changedTools))
+        return Fail(37, "stale CMake local preset was not detected");
     std::string compilerCompat, configuredCmakeLists;
     const std::wstring compilerCompatPath = pathconfig::JoinPath(cmakeRoot, L"cmake\\PathConfiguratorCompilerCompat.cmake");
     if (!ReadText(compilerCompatPath, compilerCompat) ||
@@ -194,6 +210,10 @@ int main() {
         !ReadText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), configuredCmakeLists) ||
         configuredCmakeLists.find("PathConfiguratorCompilerCompat.cmake") != configuredCmakeLists.rfind("PathConfiguratorCompilerCompat.cmake"))
         return Fail(26, "Clang compatibility module insertion is not idempotent");
+    if (!pathconfig::WriteConfiguration(workspace, tools, workspace.projectName, workspace.chipType, tools.svd, false, error, true) ||
+        !pathconfig::FileExists(settingsPath + L".bak") || !pathconfig::FileExists(workspace.presetsPath + L".bak") ||
+        !pathconfig::FileExists(compilerCompatPath + L".bak"))
+        return Fail(31, "explicit toolchain backup generation failed");
     const std::string compatInclude =
         "# PathConfigurator: st-arm-clang 与 CubeMX CMSIS 的兼容规则\n"
         "include(\"${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorCompilerCompat.cmake\")\n\n";
@@ -215,20 +235,36 @@ int main() {
     if (!pathconfig::MakeToolchainRelativePath(workspace, appSource, false, relativeSource) || relativeSource != L"../App/Src/app.c")
         return Fail(14, "source path was not made portable");
     pathconfig::CMakeTargetConfig targetConfig;
-    targetConfig.sources.push_back({relativeSource, false});
-    targetConfig.sources.push_back({L"../BSP/Src", true});
+    targetConfig.virtualFolders.push_back(L"Application");
+    targetConfig.virtualFolders.push_back(L"Drivers/BSP");
+    targetConfig.sources.push_back({relativeSource, false, L"Application"});
+    targetConfig.sources.push_back({L"../BSP/Src", true, L"Drivers/BSP"});
     targetConfig.includeDirectories.push_back(L"../App/Inc");
     targetConfig.compileDefinitions.push_back(L"USE_BSP");
     targetConfig.linkDirectories.push_back(L"../Middlewares/Library");
     if (!pathconfig::WriteCMakeTargetConfig(workspace, targetConfig, error)) return Fail(15, "cannot write CMake target configuration");
     pathconfig::CMakeTargetConfig loadedTargetConfig;
-    std::string generatedModule, updatedCmakeLists;
+    std::string generatedModule, updatedCmakeLists, writtenTargetConfig;
     if (!pathconfig::LoadCMakeTargetConfig(workspace, loadedTargetConfig, error) || loadedTargetConfig.sources.size() != 2 ||
-        !loadedTargetConfig.sources[1].isFolder || !ReadText(workspace.cmakeTargetModulePath, generatedModule) ||
+        loadedTargetConfig.virtualFolders.size() != 3 || loadedTargetConfig.sources[0].virtualFolder != L"Application" ||
+        !loadedTargetConfig.sources[1].isFolder || loadedTargetConfig.sources[1].virtualFolder != L"Drivers/BSP" || !ReadText(workspace.cmakeTargetModulePath, generatedModule) ||
+        !ReadText(workspace.cmakeTargetConfigPath, writtenTargetConfig) || writtenTargetConfig.find("\"version\": 2") == std::string::npos ||
+        writtenTargetConfig.find("\"virtualFolders\"") == std::string::npos || writtenTargetConfig.find("\"virtualFolder\": \"Drivers/BSP\"") == std::string::npos ||
         !ReadText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), updatedCmakeLists) ||
         generatedModule.find("GLOB_RECURSE") == std::string::npos || generatedModule.find("CONFIGURE_DEPENDS") == std::string::npos ||
         updatedCmakeLists.find("PathConfiguratorProject.cmake") == std::string::npos)
         return Fail(16, "CMake target configuration generation failed");
+    if (!pathconfig::WriteCMakeTargetConfig(workspace, targetConfig, error, true) ||
+        !pathconfig::FileExists(workspace.cmakeTargetConfigPath + L".bak") ||
+        !pathconfig::FileExists(workspace.cmakeTargetModulePath + L".bak"))
+        return Fail(32, "explicit CMake target backup generation failed");
+
+    if (!WriteText(workspace.cmakeTargetConfigPath,
+                   "{\n  \"version\": 1,\n  \"sources\": [{\"kind\": \"folder\", \"path\": \"../App\"}],\n"
+                   "  \"includeDirectories\": [],\n  \"compileDefinitions\": [],\n  \"linkDirectories\": []\n}\n") ||
+        !pathconfig::LoadCMakeTargetConfig(workspace, loadedTargetConfig, error) || loadedTargetConfig.sources.size() != 1 ||
+        !loadedTargetConfig.sources[0].virtualFolder.empty() || !loadedTargetConfig.virtualFolders.empty())
+        return Fail(29, "legacy target configuration compatibility failed");
 
     const std::wstring rootCmakeProject = pathconfig::JoinPath(fixture.Path(), L"EmptyToolchainLocation");
     if (!WriteText(pathconfig::JoinPath(rootCmakeProject, L"RootProject.ioc"),
@@ -259,6 +295,9 @@ int main() {
     if (!pathconfig::LoadUserDefaultSettings(loadedDefaults, error) || !loadedDefaults.svd.empty() || !loadedDefaults.openocdTarget.empty() ||
         loadedDefaults.cmake != tools.cmake || loadedDefaults.openocd != tools.openocd)
         return Fail(23, "default settings are not project independent");
+    if (!pathconfig::WriteUserDefaultSettings(defaultTools, error, true) ||
+        !pathconfig::FileExists(pathconfig::GetUserDefaultSettingsPath() + L".bak"))
+        return Fail(33, "explicit default-settings backup generation failed");
 
     std::wprintf(L"core_smoke passed: %ls\n", workspace.projectName.c_str());
     return 0;
