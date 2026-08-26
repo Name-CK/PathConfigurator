@@ -8,8 +8,11 @@
 #include <shlwapi.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
+#include <winhttp.h>
 
 #include <cwctype>
+#include <limits>
+#include <utility>
 
 using namespace pathconfig;
 
@@ -44,7 +47,24 @@ namespace
 		ID_TARGET_ADD_FILE = 322,
 		ID_TARGET_ADD_FOLDER = 323,
 		ID_TARGET_DELETE = 324,
-		ID_TARGET_SAVE = 325
+		ID_TARGET_SAVE = 325,
+		ID_UPDATE_LINK = 326
+	};
+
+	constexpr UINT WM_APP_UPDATE_CHECK_COMPLETE = WM_APP + 1;
+
+	constexpr wchar_t kAppVersion[] = L"1.0.0";
+	constexpr wchar_t kGitHubReleasePage[] = L"https://github.com/Name-CK/PathConfigurator/releases";
+
+	struct LatestRelease
+	{
+		std::wstring tag;
+		std::wstring url;
+	};
+
+	struct UpdateCheckResult
+	{
+		LatestRelease release;
 	};
 
 	struct AppState
@@ -54,6 +74,7 @@ namespace
 		std::wstring projectName;
 		std::wstring chipType;
 		std::wstring svd;
+		std::wstring updateUrl;
 		CMakeTargetConfig cmakeTarget;
 		HWND edits[8]{};
 		HWND openocdConfigBrowse[2]{};
@@ -64,6 +85,7 @@ namespace
 		HWND targetAddFolder = nullptr;
 		HWND targetDelete = nullptr;
 		HWND targetSave = nullptr;
+		HWND updateLink = nullptr;
 		std::vector<HWND> toolPageControls;
 		std::vector<HWND> targetPageControls;
 		HWND status = nullptr;
@@ -323,6 +345,171 @@ namespace
 	{
 		if (g_app.status)
 			SetWindowTextW(g_app.status, text.c_str());
+	}
+
+	bool Utf8ToWide(const std::string &value, std::wstring &result)
+	{
+		if (value.empty())
+		{
+			result.clear();
+			return true;
+		}
+		const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+			static_cast<int>(value.size()), nullptr, 0);
+		if (length <= 0)
+			return false;
+		result.resize(static_cast<size_t>(length));
+		return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+			static_cast<int>(value.size()), result.data(), length) == length;
+	}
+
+	bool ExtractJsonString(const std::string &json, const char *key, std::string &value)
+	{
+		const std::string marker = std::string("\"") + key + "\"";
+		const size_t keyPosition = json.find(marker);
+		if (keyPosition == std::string::npos)
+			return false;
+		const size_t colon = json.find(':', keyPosition + marker.size());
+		if (colon == std::string::npos)
+			return false;
+		const size_t quote = json.find('"', colon + 1);
+		if (quote == std::string::npos)
+			return false;
+		value.clear();
+		bool escaped = false;
+		for (size_t i = quote + 1; i < json.size(); ++i)
+		{
+			const char current = json[i];
+			if (escaped)
+			{
+				if (current == '"' || current == '\\' || current == '/') value.push_back(current);
+				else if (current == 'n') value.push_back('\n');
+				else if (current == 'r') value.push_back('\r');
+				else if (current == 't') value.push_back('\t');
+				else value.push_back(current);
+				escaped = false;
+				continue;
+			}
+			if (current == '\\') { escaped = true; continue; }
+			if (current == '"') return true;
+			value.push_back(current);
+		}
+		return false;
+	}
+
+	struct VersionParts
+	{
+		int value[3]{};
+	};
+
+	bool ParseVersion(const std::wstring &text, VersionParts &version)
+	{
+		version = {};
+		size_t position = 0;
+		while (position < text.size() && !iswdigit(text[position])) ++position;
+		int component = 0;
+		while (position < text.size() && component < 3)
+		{
+			while (position < text.size() && !iswdigit(text[position])) ++position;
+			if (position == text.size()) break;
+			int number = 0;
+			while (position < text.size() && iswdigit(text[position]))
+			{
+				const int digit = text[position++] - L'0';
+				if (number <= (std::numeric_limits<int>::max() - digit) / 10)
+					number = number * 10 + digit;
+				else
+					number = std::numeric_limits<int>::max();
+			}
+			version.value[component++] = number;
+		}
+		return component > 0;
+	}
+
+	int CompareVersions(const VersionParts &left, const VersionParts &right)
+	{
+		for (size_t i = 0; i < ARRAY_SIZE(left.value); ++i)
+			if (left.value[i] != right.value[i]) return left.value[i] < right.value[i] ? -1 : 1;
+		return 0;
+	}
+
+	bool FetchLatestRelease(LatestRelease &release)
+	{
+		HINTERNET session = WinHttpOpen(L"PathConfigurator/1.0.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+		HINTERNET connection = nullptr;
+		HINTERNET request = nullptr;
+		std::string response;
+		bool requestOk = false;
+		do
+		{
+			if (!session) break;
+			WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000);
+			connection = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+			if (!connection) break;
+			request = WinHttpOpenRequest(connection, L"GET", L"/repos/Name-CK/PathConfigurator/releases/latest",
+				nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+			if (!request) break;
+			const wchar_t headers[] = L"Accept: application/vnd.github+json\r\nUser-Agent: PathConfigurator/1.0.0\r\n";
+			if (!WinHttpSendRequest(request, headers, static_cast<DWORD>(-1), WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) break;
+			if (!WinHttpReceiveResponse(request, nullptr)) break;
+			DWORD statusCode = 0;
+			DWORD statusLength = sizeof(statusCode);
+			if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusLength, WINHTTP_NO_HEADER_INDEX) || statusCode != 200) break;
+			for (;;)
+			{
+				DWORD available = 0;
+				if (!WinHttpQueryDataAvailable(request, &available)) break;
+				if (available == 0) { requestOk = true; break; }
+				if (response.size() + available > 1024 * 1024) break;
+				std::string chunk(available, '\0');
+				DWORD received = 0;
+				if (!WinHttpReadData(request, chunk.data(), available, &received)) break;
+				response.append(chunk.data(), received);
+			}
+		} while (false);
+		if (request) WinHttpCloseHandle(request);
+		if (connection) WinHttpCloseHandle(connection);
+		if (session) WinHttpCloseHandle(session);
+		if (!requestOk) return false;
+
+		std::string tag;
+		std::string url;
+		if (!ExtractJsonString(response, "tag_name", tag) || !Utf8ToWide(tag, release.tag)) return false;
+		if (ExtractJsonString(response, "html_url", url) && !Utf8ToWide(url, release.url)) release.url.clear();
+		if (release.url.empty()) release.url = kGitHubReleasePage;
+		return true;
+	}
+
+	DWORD WINAPI UpdateCheckThread(void *parameter)
+	{
+		const HWND owner = static_cast<HWND>(parameter);
+		LatestRelease latest;
+		VersionParts currentVersion{};
+		VersionParts latestVersion{};
+		if (!FetchLatestRelease(latest) || !ParseVersion(kAppVersion, currentVersion) ||
+			!ParseVersion(latest.tag, latestVersion) || CompareVersions(latestVersion, currentVersion) <= 0)
+			return 0;
+
+		UpdateCheckResult *result = new UpdateCheckResult{};
+		result->release = std::move(latest);
+		if (!PostMessageW(owner, WM_APP_UPDATE_CHECK_COMPLETE, 0, reinterpret_cast<LPARAM>(result)))
+			delete result;
+		return 0;
+	}
+
+	void StartUpdateCheck(HWND owner)
+	{
+		HANDLE thread = CreateThread(nullptr, 0, UpdateCheckThread, owner, 0, nullptr);
+		if (thread) CloseHandle(thread);
+	}
+
+	std::wstring DisplayVersionTag(std::wstring tag)
+	{
+		if (!tag.empty() && tag.front() != L'v' && tag.front() != L'V')
+			tag.insert(tag.begin(), L'V');
+		return tag;
 	}
 
 	ToolPaths SharedTools(const ToolPaths &tools)
@@ -947,9 +1134,12 @@ namespace
 			SetMenu(hwnd, g_app.menu);
 			HWND title = CreateWindowW(L"STATIC", (g_app.workspace.projectLabel + L"  STM32 项目配置").c_str(), WS_CHILD | WS_VISIBLE,
 				Ui(26), Ui(18), Ui(840), Ui(30), hwnd, nullptr, nullptr, nullptr);
+			g_app.updateLink = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_NOTIFY,
+				Ui(690), Ui(20), Ui(180), Ui(26), hwnd, reinterpret_cast<HMENU>(ID_UPDATE_LINK), nullptr, nullptr);
 			HWND subtitle = CreateWindowW(L"STATIC", (L"项目：" + g_app.projectName + L"    芯片：" + g_app.chipType).c_str(),
 				WS_CHILD | WS_VISIBLE, Ui(27), Ui(48), Ui(840), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(g_app.titleFont), TRUE);
+			ApplyModernTheme(g_app.updateLink, g_app.font);
 			ApplyModernTheme(subtitle, g_app.font);
 
 			g_app.pageTab = CreateWindowExW(0, WC_TABCONTROLW, nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
@@ -1044,7 +1234,7 @@ namespace
 			AddTargetPageControl(categoryLabel); AddTargetPageControl(g_app.targetCategory); AddTargetPageControl(g_app.targetList);
 			AddTargetPageControl(g_app.targetAddFile); AddTargetPageControl(g_app.targetAddFolder); AddTargetPageControl(g_app.targetDelete); AddTargetPageControl(g_app.targetSave);
 
-			g_app.status = CreateWindowW(L"STATIC", L"OpenOCD scripts 由 openocd.exe 自动查找，无需单独配置。", WS_CHILD | WS_VISIBLE, Ui(27), Ui(460), Ui(850), Ui(26), hwnd, nullptr, nullptr, nullptr);
+			g_app.status = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, Ui(27), Ui(460), Ui(850), Ui(26), hwnd, nullptr, nullptr, nullptr);
 			ApplyModernTheme(g_app.status, g_app.font);
 			AddToolPageControl(g_app.status);
 			PushControls();
@@ -1055,6 +1245,12 @@ namespace
 		case WM_COMMAND:
 		{
 			int id = LOWORD(wParam);
+			if (id == ID_UPDATE_LINK && HIWORD(wParam) == STN_CLICKED)
+			{
+				if (!g_app.updateUrl.empty())
+					ShellExecuteW(hwnd, L"open", g_app.updateUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+				return 0;
+			}
 			if (id == ID_TARGET_CATEGORY && HIWORD(wParam) == CBN_SELCHANGE)
 			{
 				UpdateTargetCategoryControls();
@@ -1169,11 +1365,25 @@ namespace
 		{
 			HDC dc = reinterpret_cast<HDC>(wParam);
 			SetBkMode(dc, TRANSPARENT);
-			SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+			SetTextColor(dc, reinterpret_cast<HWND>(lParam) == g_app.updateLink ? RGB(196, 36, 36) : GetSysColor(COLOR_WINDOWTEXT));
 			// 标签不再刷白色矩形，保留页签底色，避免出现割裂的灰白块。
 			return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
 		}
+		case WM_APP_UPDATE_CHECK_COMPLETE:
+		{
+			UpdateCheckResult *result = reinterpret_cast<UpdateCheckResult*>(lParam);
+			if (result && g_app.updateLink)
+			{
+				SetWindowTextW(g_app.updateLink, (L"有最新版 " + DisplayVersionTag(result->release.tag)).c_str());
+				g_app.updateUrl = std::move(result->release.url);
+				ShowWindow(g_app.updateLink, SW_SHOW);
+			}
+			delete result;
+			return 0;
+		}
 		case WM_DESTROY:
+			g_app.updateLink = nullptr;
+			g_app.updateUrl.clear();
 			if (g_app.menu) DestroyMenu(g_app.menu);
 			if (g_app.font) DeleteObject(g_app.font);
 			if (g_app.titleFont) DeleteObject(g_app.titleFont);
@@ -1211,9 +1421,9 @@ namespace
 		ApplyOpenOcdDefaults();
 		// 仅当工程配置缺失或有无效工具路径时，才按默认配置、注册表的顺序补齐。
 		OfferUserDefaultsOnStartup(nullptr, hasLocalSettings);
-		// 默认配置只存共享工具。对于没有工程 settings.json 的首次配置，
-		// 从已填入的 CubeCLT 工具反查包根目录并尝试匹配当前芯片的 SVD。
-		if (!hasLocalSettings && TryAutoFillSvdFromCurrentCubeClt())
+		// VS Code/CMake Tools 也可能预先创建仅含编辑器设置的 settings.json。
+		// 只要当前没有有效 SVD，就从已填入的 CubeCLT 工具反查包根目录并匹配芯片。
+		if (TryAutoFillSvdFromCurrentCubeClt())
 			Status(L"已从 STM32CubeCLT 自动匹配当前芯片的 SVD 文件。");
 		g_app.tools.svd = g_app.svd;
 		HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -1236,6 +1446,7 @@ namespace
 			return 1;
 		ShowWindow(hwnd, SW_SHOW);
 		UpdateWindow(hwnd);
+		StartUpdateCheck(hwnd);
 		// 窗口显示后再次同步，确保原生 Edit 控件已经完成创建。
 		PushControls();
 		MSG msg{};

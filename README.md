@@ -143,6 +143,12 @@ E:\Tools\OpenOCD
 
 默认配置**不会**保存 SVD、OpenOCD target、芯片类型或项目名，因为它们属于具体工程。
 
+## 更新提示
+
+程序打开后会在后台静默查询 GitHub Releases。网络不可用、没有 Release、版本号无法识别或当前已经是最新版时，界面不会显示提示，也不会影响配置流程。
+
+仅当检测到高于程序内置版本的新 Release 时，窗口右上角才会显示红色的“有最新版 Vx.x.x”。点击该文字会打开对应的 GitHub Release 页面；程序不会自动下载或安装任何内容。
+
 ## VS Code 编译、烧录和调试
 
 本程序只写入路径和相关 VS Code 配置键；它不会直接编译、烧录或启动调试器。工程的 `.vscode/tasks.json` 和 `.vscode/launch.json` 需要使用以下 `CustomCfg.*` 键：
