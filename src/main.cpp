@@ -1134,7 +1134,7 @@ namespace
 			SetMenu(hwnd, g_app.menu);
 			HWND title = CreateWindowW(L"STATIC", (g_app.workspace.projectLabel + L"  STM32 项目配置").c_str(), WS_CHILD | WS_VISIBLE,
 				Ui(26), Ui(18), Ui(840), Ui(30), hwnd, nullptr, nullptr, nullptr);
-			g_app.updateLink = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_NOTIFY,
+			g_app.updateLink = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_NOTIFY | SS_RIGHT,
 				Ui(690), Ui(20), Ui(180), Ui(26), hwnd, reinterpret_cast<HMENU>(ID_UPDATE_LINK), nullptr, nullptr);
 			HWND subtitle = CreateWindowW(L"STATIC", (L"项目：" + g_app.projectName + L"    芯片：" + g_app.chipType).c_str(),
 				WS_CHILD | WS_VISIBLE, Ui(27), Ui(48), Ui(840), Ui(22), hwnd, nullptr, nullptr, nullptr);
@@ -1361,6 +1361,13 @@ namespace
 			DestroyWindow(hwnd);
 			PostQuitMessage(0);
 			return 0;
+		case WM_SETCURSOR:
+			if (reinterpret_cast<HWND>(wParam) == g_app.updateLink && LOWORD(lParam) == HTCLIENT)
+			{
+				SetCursor(LoadCursorW(nullptr, IDC_HAND));
+				return TRUE;
+			}
+			break;
 		case WM_CTLCOLORSTATIC:
 		{
 			HDC dc = reinterpret_cast<HDC>(wParam);
