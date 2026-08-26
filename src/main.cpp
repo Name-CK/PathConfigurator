@@ -1,4 +1,10 @@
 #include "core.hpp"
+#include "cmake_file_dialog.hpp"
+#include "gui_state.hpp"
+#include "page_router.hpp"
+#include "target_config_controller.hpp"
+#include "toolchain_controller.hpp"
+#include "update_service.hpp"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -10,7 +16,6 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
-#include <shobjidl.h>
 #include <uxtheme.h>
 #include <winhttp.h>
 
@@ -23,8 +28,15 @@
 
 using namespace pathconfig;
 
+namespace pathconfig::gui
+{
+	AppState g_app;
+	AboutWindowState g_about;
+}
+
 namespace
 {
+	using namespace pathconfig::gui;
 	// 统一逻辑尺寸。进程声明为系统 DPI 感知后，按系统缩放创建真实像素尺寸，避免 DWM 位图放大客户端文字。
 	UINT g_systemDpi = 96;
 	int Ui(int value)
@@ -65,156 +77,115 @@ namespace
 		ID_TARGET_TREE = 332,
 		ID_ABOUT_REPOSITORY = 333,
 		ID_ABOUT_STATUS = 334,
-		ID_ABOUT_CLOSE = 335
+		ID_ABOUT_CLOSE = 335,
+		ID_OTHER_TOGGLE_THEME = 336
 	};
 
-	constexpr UINT WM_APP_CMAKE_DIALOG_RESULT = WM_APP + 2;
-	constexpr UINT WM_APP_CMAKE_DIALOG_CLEANUP_COMPLETE = WM_APP + 3;
 	constexpr UINT_PTR ID_HOVER_TOOLTIP_TIMER = 1;
 	constexpr UINT_PTR ID_UPDATE_PROCESS_TIMER = 2;
 	constexpr UINT_PTR ID_ABOUT_UPDATE_TIMER = 3;
 	constexpr int CUSTOM_MENU_HEIGHT = 20;
 
-	constexpr wchar_t kAppVersion[] = L"1.0.0";
+	constexpr wchar_t kAppVersion[] = L"1.1.0";
 	constexpr wchar_t kGitHubRepository[] = L"https://github.com/Name-CK/PathConfigurator";
-	constexpr wchar_t kGitHubReleasePage[] = L"https://github.com/Name-CK/PathConfigurator/releases";
 
-	struct LatestRelease
-	{
-		std::wstring tag;
-		std::wstring url;
-	};
+	enum class ThemeMode { Light, Dark };
 
-	struct CMakeDialogRequest
-	{
-		HWND owner = nullptr;
-		std::wstring root;
-		std::wstring title;
-		bool isFolder = false;
-	};
-
-	struct CMakeDialogResult
-	{
-		std::vector<std::wstring> paths;
-		bool isFolder = false;
-	};
-
-	enum class TargetTreeItemKind
-	{
-		Root,
-		VirtualFolder,
-		Source,
-		PhysicalSourceFolder,
-		PhysicalFolder
-	};
-
-	struct TargetTreeItem
-	{
-		TargetTreeItemKind kind = TargetTreeItemKind::Root;
-		std::wstring virtualFolder;
-		size_t sourceIndex = static_cast<size_t>(-1);
-		std::wstring physicalPath;
-		bool physicalChildrenLoaded = false;
-	};
-
-	struct PhysicalBrowserEntry
-	{
-		std::wstring path;
-		bool isFolder = false;
-	};
-
-	struct AppState
-	{
-		WorkspaceInfo workspace;
-		ToolPaths tools;
-		std::wstring projectName;
-		std::wstring chipType;
-		std::wstring svd;
-		std::wstring updateUrl;
-		CMakeTargetConfig cmakeTarget;
-		HWND edits[8]{};
-		HWND openocdConfigBrowse[2]{};
-		HWND pageTab = nullptr;
-		HWND targetCategory = nullptr;
-		HWND targetTree = nullptr;
-		HWND targetList = nullptr;
-		HWND targetAddVirtualFolder = nullptr;
-		HWND targetAddFile = nullptr;
-		HWND targetAddFolder = nullptr;
-		HWND targetDelete = nullptr;
-		HWND targetMoveUp = nullptr;
-		HWND targetMoveDown = nullptr;
-		HWND targetSave = nullptr;
-		HWND tooltip = nullptr;
-		HWND hoverControl = nullptr;
-		std::vector<std::pair<HWND, std::wstring>> tooltipTexts;
-		HWND updateLink = nullptr;
-		std::vector<HWND> toolPageControls;
-		std::vector<HWND> targetPageControls;
-		HWND status = nullptr;
-		HWND window = nullptr;
-		HFONT font = nullptr;
-		HFONT titleFont = nullptr;
-		ID2D1Factory* d2dFactory = nullptr;
-		ID2D1DCRenderTarget* d2dDcTarget = nullptr;
-		IDWriteFactory* dwriteFactory = nullptr;
-		IDWriteTextFormat* dwriteFont = nullptr;
-		IDWriteTextFormat* dwriteTitleFont = nullptr;
-		HBRUSH windowBrush = nullptr;
-		HBRUSH controlBrush = nullptr;
-		HBRUSH panelBrush = nullptr;
-		HMENU menu = nullptr;
-		HMENU configMenu = nullptr;
-		HMENU otherMenu = nullptr;
-		HWND configMenuButton = nullptr;
-		HWND otherMenuButton = nullptr;
-		bool updateCheckStarted = false;
-		HANDLE updateProcess = nullptr;
-		bool cmakeDialogOpen = false;
-		unsigned int cmakeDialogWorkers = 0;
-		std::vector<std::unique_ptr<TargetTreeItem>> targetTreeItems;
-		std::vector<size_t> targetSourceRows;
-		std::vector<PhysicalBrowserEntry> physicalBrowserRows;
-		std::wstring selectedVirtualFolder;
-		std::wstring pendingVirtualFolderParent;
-		std::wstring renamingVirtualFolder;
-		bool addingVirtualFolder = false;
-		bool targetListReadOnly = false;
-		// LoadWorkspace 已确认 CubeMX CMake 工程；工具全部有效时默认打开目标配置页。
-		bool openCmakeTargetOnStartup = false;
-	};
-
-	enum class AboutUpdateState
-	{
-		Checking,
-		Latest,
-		Outdated,
-		Failed
-	};
-
-	struct AboutWindowState
-	{
-		HWND window = nullptr;
-		HWND status = nullptr;
-		HANDLE updateProcess = nullptr;
-		std::wstring updateUrl;
-		AboutUpdateState updateState = AboutUpdateState::Checking;
-	};
-
-	AppState g_app;
-	AboutWindowState g_about;
-
-	// 默认深色主题：所有颜色均由 GDI 直接绘制，不依赖额外图片资源。
-	constexpr COLORREF kThemeWindow = RGB(30, 30, 30);
-	constexpr COLORREF kThemePanel = RGB(37, 37, 38);
-	constexpr COLORREF kThemeControl = RGB(45, 45, 48);
-	constexpr COLORREF kThemeBorder = RGB(70, 70, 74);
-	constexpr COLORREF kThemeText = RGB(232, 232, 232);
-	constexpr COLORREF kThemeMutedText = RGB(150, 150, 150);
-	constexpr COLORREF kThemeAccent = RGB(0, 122, 204);
-	constexpr COLORREF kThemeSelection = RGB(38, 79, 120);
-	constexpr COLORREF kThemeHover = RGB(55, 55, 58);
+	// 默认浅色。所有自绘控件读取同一调色板，避免主题切换时出现局部颜色不一致。
+	ThemeMode g_themeMode = ThemeMode::Light;
+	COLORREF kThemeWindow = RGB(248, 249, 252);
+	COLORREF kThemePanel = RGB(241, 243, 247);
+	COLORREF kThemeControl = RGB(255, 255, 255);
+	COLORREF kThemeBorder = RGB(196, 200, 208);
+	COLORREF kThemeText = RGB(31, 35, 42);
+	COLORREF kThemeMutedText = RGB(99, 105, 117);
+	COLORREF kThemeAccent = RGB(0, 103, 192);
+	COLORREF kThemeSelection = RGB(205, 229, 250);
+	COLORREF kThemeHover = RGB(228, 239, 251);
+	COLORREF kThemeUpdateLink = RGB(184, 37, 37);
 	const IID kIdWriteFactoryIid = {0xb859ee5a, 0xd838, 0x4b5b, {0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48}};
+
+	bool IsDarkTheme()
+	{
+		return g_themeMode == ThemeMode::Dark;
+	}
+
+	void SetThemePalette(ThemeMode mode)
+	{
+		g_themeMode = mode;
+		if (mode == ThemeMode::Dark)
+		{
+			kThemeWindow = RGB(30, 30, 30);
+			kThemePanel = RGB(37, 37, 38);
+			kThemeControl = RGB(45, 45, 48);
+			kThemeBorder = RGB(70, 70, 74);
+			kThemeText = RGB(232, 232, 232);
+			kThemeMutedText = RGB(150, 150, 150);
+			kThemeAccent = RGB(0, 122, 204);
+			kThemeSelection = RGB(38, 79, 120);
+			kThemeHover = RGB(55, 55, 58);
+			kThemeUpdateLink = RGB(255, 106, 106);
+		}
+		else
+		{
+			kThemeWindow = RGB(248, 249, 252);
+			kThemePanel = RGB(241, 243, 247);
+			kThemeControl = RGB(255, 255, 255);
+			kThemeBorder = RGB(196, 200, 208);
+			kThemeText = RGB(31, 35, 42);
+			kThemeMutedText = RGB(99, 105, 117);
+			kThemeAccent = RGB(0, 103, 192);
+			kThemeSelection = RGB(205, 229, 250);
+			kThemeHover = RGB(228, 239, 251);
+			kThemeUpdateLink = RGB(184, 37, 37);
+		}
+	}
+
+	std::wstring ThemeSettingsPath()
+	{
+		const std::wstring defaults = GetUserDefaultSettingsPath();
+		const std::wstring directory = GetParentPath(defaults);
+		return directory.empty() ? std::wstring{} : JoinPath(directory, L"ui-settings.json");
+	}
+
+	void LoadThemePreference()
+	{
+		SetThemePalette(ThemeMode::Light);
+		const std::wstring path = ThemeSettingsPath();
+		HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) return;
+		LARGE_INTEGER size{};
+		if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 4096) { CloseHandle(file); return; }
+		std::string document(static_cast<size_t>(size.QuadPart), '\0');
+		DWORD read = 0;
+		const bool ok = ReadFile(file, document.data(), static_cast<DWORD>(document.size()), &read, nullptr) && read == document.size();
+		CloseHandle(file);
+		if (ok && document.find("\"theme\"") != std::string::npos && document.find("\"dark\"") != std::string::npos)
+			SetThemePalette(ThemeMode::Dark);
+	}
+
+	bool SaveThemePreference()
+	{
+		const std::wstring path = ThemeSettingsPath();
+		if (path.empty()) return false;
+		const std::wstring directory = GetParentPath(path);
+		if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+		const std::string document = std::string("{\n  \"theme\": \"") + (IsDarkTheme() ? "dark" : "light") + "\"\n}\n";
+		const std::wstring temporary = path + L".tmp";
+		HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE) return false;
+		DWORD written = 0;
+		const bool ok = WriteFile(file, document.data(), static_cast<DWORD>(document.size()), &written, nullptr) && written == document.size();
+		FlushFileBuffers(file);
+		CloseHandle(file);
+		if (!ok || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		{
+			DeleteFileW(temporary.c_str());
+			return false;
+		}
+		return true;
+	}
 
 	void EnableSystemDpiAwareness()
 	{
@@ -372,11 +343,7 @@ namespace
 		SelectObject(dc, oldFont);
 	}
 
-	const wchar_t *Labels[] = {L"CMake", L"Ninja", L"starm-clang", L"ARM GDB", L"OpenOCD", L"调试器", L"目标配置文件", L"SVD"};
-	const wchar_t *FileNames[] = {L"cmake.exe", L"ninja.exe", L"starm-clang.exe", L"arm-none-eabi-gdb.exe", L"openocd.exe", L"", L"", L".svd"};
-	const bool HasBrowse[] = {true, true, true, true, true, true, true, true};
-
-	enum TargetCategory : int { TargetSources, TargetIncludes, TargetDefinitions, TargetLinkDirectories };
+	const wchar_t *Labels[] = {L"CMake", L"Ninja", L"starm-clang", L"GNU Arm GDB", L"OpenOCD", L"调试接口", L"目标芯片配置", L"SVD"};
 
 	void AddToolPageControl(HWND control)
 	{
@@ -386,232 +353,6 @@ namespace
 	void AddTargetPageControl(HWND control)
 	{
 		if (control) g_app.targetPageControls.push_back(control);
-	}
-
-	std::wstring GetEdit(HWND h)
-	{
-		int n = GetWindowTextLengthW(h);
-		std::wstring value(static_cast<size_t>(n) + 1, L'\0');
-		if (n > 0)
-			GetWindowTextW(h, value.data(), n + 1);
-		value.resize(static_cast<size_t>(n));
-		return Trim(value);
-	}
-
-	void SetEdit(HWND h, const std::wstring &value)
-	{
-		if (!h)
-			return;
-		SetWindowTextW(h, value.c_str());
-	}
-
-	int SelectedTargetCategory()
-	{
-		if (!g_app.targetCategory) return TargetSources;
-		const LRESULT selected = SendMessageW(g_app.targetCategory, CB_GETCURSEL, 0, 0);
-		return selected >= TargetSources && selected <= TargetLinkDirectories ? static_cast<int>(selected) : TargetSources;
-	}
-
-	bool SameConfigValue(const std::wstring& left, const std::wstring& right)
-	{
-		return _wcsicmp(Trim(left).c_str(), Trim(right).c_str()) == 0;
-	}
-
-	// 虚拟文件夹是工程配置内的分组路径；统一使用 /，不与实际磁盘目录混淆。
-	std::wstring NormalizeVirtualFolderPath(const std::wstring& value)
-	{
-		std::wstring path = Trim(value);
-		for (wchar_t& c : path) if (c == L'\\') c = L'/';
-		std::wstring normalized;
-		size_t begin = 0;
-		while (begin <= path.size())
-		{
-			const size_t end = path.find(L'/', begin);
-			const std::wstring segment = Trim(path.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin));
-			if (segment.empty()) return {};
-			if (!normalized.empty()) normalized += L'/';
-			normalized += segment;
-			if (end == std::wstring::npos) break;
-			begin = end + 1;
-		}
-		return normalized;
-	}
-
-	bool IsValidVirtualFolderPath(const std::wstring& rawValue)
-	{
-		const std::wstring value = NormalizeVirtualFolderPath(rawValue);
-		if (value.empty() || value.front() == L'/' || value.back() == L'/') return false;
-		size_t begin = 0;
-		while (begin < value.size())
-		{
-			const size_t end = value.find(L'/', begin);
-			const std::wstring segment = value.substr(begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
-			if (segment == L"." || segment == L"..") return false;
-			for (wchar_t c : segment)
-				if (c < 32 || c == L':' || c == L'*' || c == L'?' || c == L'"' || c == L'<' || c == L'>' ||
-					c == L'|' || c == L';' || c == L'$') return false;
-			if (end == std::wstring::npos) break;
-			begin = end + 1;
-		}
-		return true;
-	}
-
-	std::wstring ParentVirtualFolder(const std::wstring& path)
-	{
-		const size_t separator = path.rfind(L'/');
-		return separator == std::wstring::npos ? L"" : path.substr(0, separator);
-	}
-
-	std::wstring VirtualFolderLeafName(const std::wstring& path)
-	{
-		const size_t separator = path.rfind(L'/');
-		return separator == std::wstring::npos ? path : path.substr(separator + 1);
-	}
-
-	bool SameVirtualFolder(const std::wstring& left, const std::wstring& right)
-	{
-		return SameConfigValue(NormalizeVirtualFolderPath(left), NormalizeVirtualFolderPath(right));
-	}
-
-	bool IsVirtualFolderOrDescendant(const std::wstring& value, const std::wstring& parent)
-	{
-		const std::wstring normalizedValue = NormalizeVirtualFolderPath(value);
-		const std::wstring normalizedParent = NormalizeVirtualFolderPath(parent);
-		if (normalizedParent.empty()) return true;
-		if (SameVirtualFolder(normalizedValue, normalizedParent)) return true;
-		return normalizedValue.size() > normalizedParent.size() &&
-			_wcsnicmp(normalizedValue.c_str(), normalizedParent.c_str(), normalizedParent.size()) == 0 &&
-			normalizedValue[normalizedParent.size()] == L'/';
-	}
-
-	bool IsPhysicalTreeFolder(const TargetTreeItem* item)
-	{
-		return item && (item->kind == TargetTreeItemKind::PhysicalSourceFolder ||
-			item->kind == TargetTreeItemKind::PhysicalFolder);
-	}
-
-	TargetTreeItem* TargetTreeItemFromHandle(HTREEITEM handle)
-	{
-		if (!g_app.targetTree || !handle) return nullptr;
-		TVITEMW item{};
-		item.mask = TVIF_PARAM;
-		item.hItem = handle;
-		return TreeView_GetItem(g_app.targetTree, &item) ? reinterpret_cast<TargetTreeItem*>(item.lParam) : nullptr;
-	}
-
-	TargetTreeItem* SelectedTargetTreeItem()
-	{
-		return TargetTreeItemFromHandle(g_app.targetTree ? TreeView_GetSelection(g_app.targetTree) : nullptr);
-	}
-
-	std::wstring CurrentVirtualFolder()
-	{
-		if (TargetTreeItem* item = SelectedTargetTreeItem())
-			return NormalizeVirtualFolderPath(item->virtualFolder);
-		return NormalizeVirtualFolderPath(g_app.selectedVirtualFolder);
-	}
-
-	std::wstring ProjectRelativeDisplayPath(const std::wstring& cmakeRelativePath, bool isDirectory)
-	{
-		const std::wstring absolute = NormalizePath(JoinPath(g_app.workspace.toolchainRoot, cmakeRelativePath));
-		wchar_t relative[MAX_PATH * 4]{};
-		const DWORD attributes = isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-		if (!absolute.empty() && PathRelativePathToW(relative, g_app.workspace.root.c_str(), FILE_ATTRIBUTE_DIRECTORY,
-			absolute.c_str(), attributes))
-		{
-			std::wstring value = relative;
-			while (value.rfind(L".\\", 0) == 0) value.erase(0, 2);
-			for (wchar_t& c : value) if (c == L'/') c = L'\\';
-			if (value.empty() || value == L".") return L"\\";
-			return value.front() == L'\\' ? value : L"\\" + value;
-		}
-		std::wstring value = cmakeRelativePath;
-		for (wchar_t& c : value) if (c == L'/') c = L'\\';
-		return value.empty() || value.front() == L'\\' ? value : L"\\" + value;
-	}
-
-	size_t TargetEntryCount(int category)
-	{
-		switch (category)
-		{
-		case TargetSources: return g_app.targetListReadOnly ? g_app.physicalBrowserRows.size() : g_app.targetSourceRows.size();
-		case TargetIncludes: return g_app.cmakeTarget.includeDirectories.size();
-		case TargetDefinitions: return g_app.cmakeTarget.compileDefinitions.size();
-		case TargetLinkDirectories: return g_app.cmakeTarget.linkDirectories.size();
-		default: return 0;
-		}
-	}
-
-	std::vector<int> SelectedTargetListRows()
-	{
-		std::vector<int> rows;
-		if (!g_app.targetList) return rows;
-		const size_t entryCount = TargetEntryCount(SelectedTargetCategory());
-		for (int index = ListView_GetNextItem(g_app.targetList, -1, LVNI_SELECTED);
-			index >= 0;
-			index = ListView_GetNextItem(g_app.targetList, index, LVNI_SELECTED))
-		{
-			if (static_cast<size_t>(index) < entryCount) rows.push_back(index);
-		}
-		return rows;
-	}
-
-	std::vector<int> SelectedTargetEntryIndices()
-	{
-		std::vector<int> indices;
-		const std::vector<int> rows = SelectedTargetListRows();
-		if (SelectedTargetCategory() == TargetSources)
-		{
-			for (int row : rows)
-				if (static_cast<size_t>(row) < g_app.targetSourceRows.size())
-					indices.push_back(static_cast<int>(g_app.targetSourceRows[static_cast<size_t>(row)]));
-		}
-		else indices = rows;
-		return indices;
-	}
-
-	void UpdateTargetActionButtons()
-	{
-		if (!g_app.targetList)
-			return;
-		const bool sourceCategory = SelectedTargetCategory() == TargetSources;
-		const std::vector<int> selectedRows = SelectedTargetListRows();
-		const bool hasEntry = !selectedRows.empty();
-		TargetTreeItem* selectedTreeItem = sourceCategory ? SelectedTargetTreeItem() : nullptr;
-		if (sourceCategory)
-		{
-			const bool editable = !g_app.targetListReadOnly;
-			// 源目录和子目录仅用于查看实际内容；隐藏所有会修改工程配置的新增按钮。
-			if (g_app.targetAddVirtualFolder) {
-				EnableWindow(g_app.targetAddVirtualFolder, editable);
-				ShowWindow(g_app.targetAddVirtualFolder, editable ? SW_SHOW : SW_HIDE);
-			}
-			if (g_app.targetAddFile) {
-				EnableWindow(g_app.targetAddFile, editable);
-				ShowWindow(g_app.targetAddFile, editable ? SW_SHOW : SW_HIDE);
-			}
-			if (g_app.targetAddFolder) {
-				EnableWindow(g_app.targetAddFolder, editable);
-				ShowWindow(g_app.targetAddFolder, editable ? SW_SHOW : SW_HIDE);
-			}
-			if (!editable)
-			{
-				const bool canDeleteTreeItem = selectedTreeItem && IsPhysicalTreeFolder(selectedTreeItem);
-				if (g_app.targetDelete) EnableWindow(g_app.targetDelete, hasEntry || canDeleteTreeItem);
-				if (g_app.targetMoveUp) EnableWindow(g_app.targetMoveUp, FALSE);
-				if (g_app.targetMoveDown) EnableWindow(g_app.targetMoveDown, FALSE);
-				if (g_app.targetSave) EnableWindow(g_app.targetSave, TRUE);
-				return;
-			}
-		}
-		const size_t count = TargetEntryCount(SelectedTargetCategory());
-		const bool canDeleteTreeItem = selectedTreeItem &&
-			((selectedTreeItem->kind == TargetTreeItemKind::VirtualFolder && !selectedTreeItem->virtualFolder.empty()) ||
-			 (selectedTreeItem->kind == TargetTreeItemKind::Source && selectedTreeItem->sourceIndex != static_cast<size_t>(-1)));
-		if (g_app.targetDelete) EnableWindow(g_app.targetDelete, hasEntry || (!hasEntry && canDeleteTreeItem));
-		if (g_app.targetMoveUp) EnableWindow(g_app.targetMoveUp, hasEntry && selectedRows.front() > 0);
-		if (g_app.targetMoveDown) EnableWindow(g_app.targetMoveDown, hasEntry && static_cast<size_t>(selectedRows.back() + 1) < count);
-		if (g_app.targetSave) EnableWindow(g_app.targetSave, TRUE);
 	}
 
 	void AddToolTip(HWND control, const wchar_t* text)
@@ -694,7 +435,7 @@ namespace
 			const bool isAboutStatus = data == 4;
 			const bool isRepositoryLink = data == 5;
 			COLORREF color = kThemeText;
-			if (isUpdateLink) color = RGB(255, 106, 106);
+			if (isUpdateLink) color = kThemeUpdateLink;
 			else if (isRepositoryLink) color = RGB(105, 185, 245);
 			else if (isAboutStatus)
 			{
@@ -772,247 +513,6 @@ namespace
 			SWP_NOACTIVATE | SWP_SHOWWINDOW);
 	}
 
-	TargetTreeItem* NewTargetTreeItem(TargetTreeItemKind kind, const std::wstring& virtualFolder,
-		size_t sourceIndex = static_cast<size_t>(-1), const std::wstring& physicalPath = L"")
-	{
-		auto item = std::make_unique<TargetTreeItem>();
-		item->kind = kind;
-		item->virtualFolder = NormalizeVirtualFolderPath(virtualFolder);
-		item->sourceIndex = sourceIndex;
-		item->physicalPath = NormalizePath(physicalPath);
-		TargetTreeItem* raw = item.get();
-		g_app.targetTreeItems.push_back(std::move(item));
-		return raw;
-	}
-
-	HTREEITEM InsertTargetTreeItem(HTREEITEM parent, const std::wstring& text, TargetTreeItem* data, bool bold = false)
-	{
-		TVINSERTSTRUCTW insertion{};
-		insertion.hParent = parent;
-		insertion.hInsertAfter = TVI_LAST;
-		insertion.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
-		insertion.item.pszText = const_cast<wchar_t*>(text.c_str());
-		insertion.item.lParam = reinterpret_cast<LPARAM>(data);
-		insertion.item.stateMask = TVIS_BOLD;
-		insertion.item.state = bold ? TVIS_BOLD : 0;
-		return TreeView_InsertItem(g_app.targetTree, &insertion);
-	}
-
-	bool PhysicalFolderHasDirectChildFolder(const std::wstring& path)
-	{
-		WIN32_FIND_DATAW data{};
-		HANDLE find = FindFirstFileW(JoinPath(path, L"*").c_str(), &data);
-		if (find == INVALID_HANDLE_VALUE) return false;
-		bool found = false;
-		do
-		{
-			if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-				(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-				wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0)
-				continue;
-			found = true;
-			break;
-		} while (FindNextFileW(find, &data));
-		FindClose(find);
-		return found;
-	}
-
-	void AddPhysicalFolderPlaceholder(HTREEITEM parent, const std::wstring& path)
-	{
-		if (!PhysicalFolderHasDirectChildFolder(path)) return;
-		// 仅告诉 TreeView 此节点可展开，不插入不可见的伪子节点，避免留下图像占位方框。
-		TVITEMW item{};
-		item.mask = TVIF_CHILDREN;
-		item.hItem = parent;
-		item.cChildren = 1;
-		TreeView_SetItem(g_app.targetTree, &item);
-	}
-
-	void LoadPhysicalFolderChildren(HTREEITEM parent, TargetTreeItem* item)
-	{
-		if (!IsPhysicalTreeFolder(item) || item->physicalChildrenLoaded) return;
-		while (HTREEITEM child = TreeView_GetChild(g_app.targetTree, parent))
-			TreeView_DeleteItem(g_app.targetTree, child);
-		item->physicalChildrenLoaded = true;
-
-		std::vector<std::pair<std::wstring, std::wstring>> folders;
-		WIN32_FIND_DATAW data{};
-		HANDLE find = FindFirstFileW(JoinPath(item->physicalPath, L"*").c_str(), &data);
-		if (find == INVALID_HANDLE_VALUE) return;
-		do
-		{
-			if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-				(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-				wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0)
-				continue;
-			folders.emplace_back(data.cFileName, JoinPath(item->physicalPath, data.cFileName));
-		} while (FindNextFileW(find, &data));
-		FindClose(find);
-		std::sort(folders.begin(), folders.end(), [](const auto& left, const auto& right) {
-			return _wcsicmp(left.first.c_str(), right.first.c_str()) < 0;
-		});
-		for (const auto& folder : folders)
-		{
-			TargetTreeItem* child = NewTargetTreeItem(TargetTreeItemKind::PhysicalFolder, item->virtualFolder,
-				static_cast<size_t>(-1), folder.second);
-			const HTREEITEM node = InsertTargetTreeItem(parent, folder.first, child);
-			AddPhysicalFolderPlaceholder(node, child->physicalPath);
-		}
-	}
-
-	void RefreshTargetTree()
-	{
-		if (!g_app.targetTree) return;
-		const std::wstring requestedSelection = CurrentVirtualFolder();
-		if (!requestedSelection.empty()) g_app.selectedVirtualFolder = requestedSelection;
-		TreeView_DeleteAllItems(g_app.targetTree);
-		g_app.targetTreeItems.clear();
-
-		const HTREEITEM root = InsertTargetTreeItem(TVI_ROOT, L"项目根目录", NewTargetTreeItem(TargetTreeItemKind::Root, L""), true);
-		std::vector<std::pair<std::wstring, HTREEITEM>> folders;
-		folders.emplace_back(L"", root);
-		std::function<HTREEITEM(const std::wstring&)> ensureFolder;
-		ensureFolder = [&](const std::wstring& rawPath) -> HTREEITEM
-		{
-			const std::wstring path = NormalizeVirtualFolderPath(rawPath);
-			if (path.empty()) return root;
-			for (const auto& existing : folders)
-				if (SameVirtualFolder(existing.first, path)) return existing.second;
-			const HTREEITEM parent = ensureFolder(ParentVirtualFolder(path));
-			const HTREEITEM node = InsertTargetTreeItem(parent, VirtualFolderLeafName(path),
-				NewTargetTreeItem(TargetTreeItemKind::VirtualFolder, path), true);
-			folders.emplace_back(path, node);
-			return node;
-		};
-
-		for (const std::wstring& folder : g_app.cmakeTarget.virtualFolders)
-			ensureFolder(folder);
-		for (const TargetSourceEntry& source : g_app.cmakeTarget.sources)
-			if (!source.virtualFolder.empty()) ensureFolder(source.virtualFolder);
-		for (size_t i = 0; i < g_app.cmakeTarget.sources.size(); ++i)
-		{
-			const TargetSourceEntry& source = g_app.cmakeTarget.sources[i];
-			const HTREEITEM parent = ensureFolder(source.virtualFolder);
-			if (source.isFolder)
-			{
-				const std::wstring physicalPath = NormalizePath(JoinPath(g_app.workspace.toolchainRoot, source.path));
-				TargetTreeItem* item = NewTargetTreeItem(TargetTreeItemKind::PhysicalSourceFolder, source.virtualFolder, i, physicalPath);
-				const HTREEITEM node = InsertTargetTreeItem(parent, ProjectRelativeDisplayPath(source.path, true), item, true);
-				AddPhysicalFolderPlaceholder(node, physicalPath);
-			}
-			else
-			{
-				InsertTargetTreeItem(parent, ProjectRelativeDisplayPath(source.path, false),
-					NewTargetTreeItem(TargetTreeItemKind::Source, source.virtualFolder, i));
-			}
-		}
-		TreeView_Expand(g_app.targetTree, root, TVE_EXPAND);
-		for (const auto& folder : folders)
-			if (!folder.first.empty()) TreeView_Expand(g_app.targetTree, folder.second, TVE_EXPAND);
-
-		HTREEITEM selected = root;
-		for (const auto& folder : folders)
-			if (SameVirtualFolder(folder.first, g_app.selectedVirtualFolder)) { selected = folder.second; break; }
-		TreeView_SelectItem(g_app.targetTree, selected);
-	}
-
-	void SetTargetListHeader(const wchar_t* text)
-	{
-		if (!g_app.targetList) return;
-		LVCOLUMNW column{};
-		column.mask = LVCF_TEXT;
-		column.pszText = const_cast<wchar_t*>(text);
-		ListView_SetColumn(g_app.targetList, 0, &column);
-	}
-
-	void RefreshPhysicalFolderContents(const std::wstring& path)
-	{
-		struct Entry { std::wstring name; bool isFolder = false; std::wstring path; };
-		std::vector<Entry> entries;
-		WIN32_FIND_DATAW data{};
-		HANDLE find = FindFirstFileW(JoinPath(path, L"*").c_str(), &data);
-		if (find != INVALID_HANDLE_VALUE)
-		{
-			do
-			{
-				if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
-				entries.push_back({data.cFileName, (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0,
-					JoinPath(path, data.cFileName)});
-			} while (FindNextFileW(find, &data));
-			FindClose(find);
-		}
-		std::sort(entries.begin(), entries.end(), [](const Entry& left, const Entry& right) {
-			if (left.isFolder != right.isFolder) return left.isFolder;
-			return _wcsicmp(left.name.c_str(), right.name.c_str()) < 0;
-		});
-		g_app.physicalBrowserRows.clear();
-		for (size_t i = 0; i < entries.size(); ++i)
-		{
-			g_app.physicalBrowserRows.push_back({entries[i].path, entries[i].isFolder});
-			LVITEMW item{};
-			item.mask = LVIF_TEXT;
-			item.iItem = static_cast<int>(i);
-			std::wstring text = (entries[i].isFolder ? L"[目录] " : L"[文件] ") + entries[i].name;
-			item.pszText = text.data();
-			ListView_InsertItem(g_app.targetList, &item);
-		}
-	}
-
-	void RefreshTargetList()
-	{
-		if (!g_app.targetList) return;
-		ListView_DeleteAllItems(g_app.targetList);
-		g_app.targetSourceRows.clear();
-		g_app.physicalBrowserRows.clear();
-		g_app.targetListReadOnly = false;
-		const int category = SelectedTargetCategory();
-		auto add = [](int row, const std::wstring& value) {
-			LVITEMW item{};
-			item.mask = LVIF_TEXT;
-			item.iItem = row;
-			item.pszText = const_cast<wchar_t*>(value.c_str());
-			ListView_InsertItem(g_app.targetList, &item);
-		};
-		if (category == TargetSources)
-		{
-			if (TargetTreeItem* item = SelectedTargetTreeItem(); IsPhysicalTreeFolder(item))
-			{
-				g_app.targetListReadOnly = true;
-				SetTargetListHeader(L"当前目录内容（只读）");
-				RefreshPhysicalFolderContents(item->physicalPath);
-				UpdateTargetActionButtons();
-				return;
-			}
-			SetTargetListHeader(L"当前分组中的目标项");
-			const std::wstring folder = CurrentVirtualFolder();
-			for (size_t i = 0; i < g_app.cmakeTarget.sources.size(); ++i)
-			{
-				const TargetSourceEntry& source = g_app.cmakeTarget.sources[i];
-				if (!SameVirtualFolder(source.virtualFolder, folder)) continue;
-				g_app.targetSourceRows.push_back(i);
-				add(static_cast<int>(g_app.targetSourceRows.size() - 1), ProjectRelativeDisplayPath(source.path, source.isFolder));
-			}
-		}
-		else
-		{
-			SetTargetListHeader(L"项目根目录相对路径 / 宏");
-			const std::vector<std::wstring>* values = category == TargetIncludes ? &g_app.cmakeTarget.includeDirectories :
-				(category == TargetDefinitions ? &g_app.cmakeTarget.compileDefinitions : &g_app.cmakeTarget.linkDirectories);
-			const bool isPath = category != TargetDefinitions;
-			for (size_t i = 0; i < values->size(); ++i)
-				add(static_cast<int>(i), isPath ? ProjectRelativeDisplayPath((*values)[i], true) : (*values)[i]);
-		}
-		// 最后一行始终作为新项输入行，双击即可使用 ListView 原位编辑器创建配置。
-		add(ListView_GetItemCount(g_app.targetList), L"");
-		UpdateTargetActionButtons();
-	}
-
-	void RefreshSourceConfigurationViews()
-	{
-		RefreshTargetTree();
-		RefreshTargetList();
-	}
-
 	void LayoutTargetToolbar(bool showAddFile)
 	{
 		const int top = 107 + (g_app.configMenuButton ? CUSTOM_MENU_HEIGHT : 0);
@@ -1059,8 +559,8 @@ namespace
 
 	void UpdateTargetCategoryControls()
 	{
-		const int category = SelectedTargetCategory();
-		const bool sources = category == TargetSources;
+		const int category = targetconfig::SelectedCategory();
+		const bool sources = category == targetconfig::Sources;
 		if (g_app.targetTree) ShowWindow(g_app.targetTree, sources ? SW_SHOW : SW_HIDE);
 		if (g_app.targetList)
 		{
@@ -1071,93 +571,31 @@ namespace
 			ListView_SetColumnWidth(g_app.targetList, 0, Ui(width - 4));
 			LVCOLUMNW column{};
 			column.mask = LVCF_TEXT;
-			column.pszText = const_cast<wchar_t*>(sources ? L"当前分组中的目标项" : L"项目根目录相对路径 / 宏");
+			const std::wstring header = targetconfig::ListHeaderForCategory(category);
+			column.pszText = const_cast<wchar_t*>(header.c_str());
 			ListView_SetColumn(g_app.targetList, 0, &column);
 		}
 		if (g_app.targetAddFolder)
 		{
-			const bool definitions = category == TargetDefinitions;
+			const bool definitions = category == targetconfig::CompileDefinitions;
 			SetWindowTextW(g_app.targetAddFolder, definitions ? L"添加编译宏" : (sources ? L"添加源目录" : L"添加目录"));
 			UpdateToolTip(g_app.targetAddFolder, definitions ? L"添加编译宏" :
 				(sources ? L"递归添加源目录" : L"添加目录"));
 		}
 		// 不支持文件的类别不显示“添加文件”和“新建虚拟文件夹”。
 		LayoutTargetToolbar(sources);
-		if (sources) RefreshSourceConfigurationViews();
-		else RefreshTargetList();
+		if (sources) targetconfig::RefreshSourceViews();
+		else targetconfig::RefreshList();
 		RedrawWindow(g_app.window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 	}
 
 	void SwitchPage()
 	{
-		const bool targetPage = g_app.pageTab && TabCtrl_GetCurSel(g_app.pageTab) == 1;
-		for (HWND control : g_app.toolPageControls) ShowWindow(control, targetPage ? SW_HIDE : SW_SHOW);
-		for (HWND control : g_app.targetPageControls) ShowWindow(control, targetPage ? SW_SHOW : SW_HIDE);
+		const bool targetPage = ui::IsTargetPage(g_app.pageTab);
+		ui::ShowPageControls(g_app.toolPageControls, g_app.targetPageControls, targetPage);
 		if (targetPage) UpdateTargetCategoryControls();
 		// 透明标签隐藏时，父窗口也必须重绘，否则可能残留“配置类别”等旧文本。
 		RedrawWindow(g_app.window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-	}
-
-	std::wstring InterfaceNameFromControl(HWND control)
-	{
-		std::wstring value = GetEdit(control);
-		constexpr wchar_t extension[] = L".cfg";
-		const size_t extensionLength = ARRAY_SIZE(extension) - 1;
-		if (value.size() > extensionLength && _wcsicmp(value.c_str() + value.size() - extensionLength, extension) == 0)
-			value.resize(value.size() - extensionLength);
-		return value;
-	}
-
-	void PopulateOpenOcdInterfaceCombo()
-	{
-		HWND combo = g_app.edits[5];
-		if (!combo)
-			return;
-
-		std::wstring desired = InterfaceNameFromControl(combo);
-		if (desired.empty())
-			desired = g_app.tools.openocdInterface;
-		SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-
-		std::wstring scripts;
-		const bool hasScripts = g_app.edits[4] && DetectOpenOcdScripts(GetEdit(g_app.edits[4]), scripts);
-		if (hasScripts)
-		{
-			// 仅提供推荐的、未废弃的 DAP 和 ST-LINK 配置，且必须实际存在。
-			const wchar_t *names[] = {L"cmsis-dap", L"stlink"};
-			for (const wchar_t *name : names)
-			{
-				if (FileExists(JoinPath(scripts, std::wstring(L"interface\\") + name + L".cfg")))
-					SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>((std::wstring(name) + L".cfg").c_str()));
-			}
-			// 文件选择器仍允许使用其它 interface 配置；只在它实际存在时保留该项。
-			if (!desired.empty() &&
-				FileExists(JoinPath(scripts, std::wstring(L"interface\\") + desired + L".cfg")) &&
-				SendMessageW(combo, CB_FINDSTRINGEXACT, -1, reinterpret_cast<LPARAM>((desired + L".cfg").c_str())) == CB_ERR)
-			{
-				SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>((desired + L".cfg").c_str()));
-			}
-		}
-
-		int selected = CB_ERR;
-		if (!desired.empty())
-			selected = static_cast<int>(SendMessageW(combo, CB_FINDSTRINGEXACT, -1, reinterpret_cast<LPARAM>((desired + L".cfg").c_str())));
-		if (selected == CB_ERR)
-			selected = static_cast<int>(SendMessageW(combo, CB_FINDSTRINGEXACT, -1, reinterpret_cast<LPARAM>(L"cmsis-dap.cfg")));
-		if (selected == CB_ERR && SendMessageW(combo, CB_GETCOUNT, 0, 0) > 0)
-			selected = 0;
-		if (selected != CB_ERR)
-			SendMessageW(combo, CB_SETCURSEL, selected, 0);
-		EnableWindow(combo, hasScripts && selected != CB_ERR);
-	}
-
-	void UpdateOpenOcdConfigControls()
-	{
-		const bool enabled = g_app.edits[4] && FileExists(GetEdit(g_app.edits[4]));
-		PopulateOpenOcdInterfaceCombo();
-		if (g_app.edits[6]) EnableWindow(g_app.edits[6], enabled);
-		for (HWND button : g_app.openocdConfigBrowse)
-			if (button) EnableWindow(button, enabled);
 	}
 
 	void ApplyModernTheme(HWND control, HFONT font)
@@ -1171,7 +609,7 @@ namespace
 
 	// uxtheme 的深色控件接口在 Windows 10/11 中以内部导出形式提供。
 	// 动态查询使旧系统自动回退到常规控件主题，不影响程序启动。
-	void EnableNativeDarkControls()
+	void SetNativeAppTheme(bool dark)
 	{
 		using SetPreferredAppModeFn = int (WINAPI*)(int);
 		using FlushMenuThemesFn = void (WINAPI*)();
@@ -1179,20 +617,21 @@ namespace
 		if (!theme) return;
 		auto setPreferredAppMode = reinterpret_cast<SetPreferredAppModeFn>(
 			GetProcAddress(theme, reinterpret_cast<LPCSTR>(static_cast<ULONG_PTR>(135))));
-		if (setPreferredAppMode) setPreferredAppMode(2); // ForceDark
+		// PreferredAppMode: ForceDark = 2，ForceLight = 3。
+		if (setPreferredAppMode) setPreferredAppMode(dark ? 2 : 3);
 		auto flushMenuThemes = reinterpret_cast<FlushMenuThemesFn>(
 			GetProcAddress(theme, reinterpret_cast<LPCSTR>(static_cast<ULONG_PTR>(136))));
 		if (flushMenuThemes) flushMenuThemes();
 	}
 
-	void EnableNativeDarkModeForWindow(HWND control)
+	void SetNativeDarkModeForWindow(HWND control, bool dark)
 	{
 		using AllowDarkModeForWindowFn = BOOL (WINAPI*)(HWND, BOOL);
 		HMODULE theme = GetModuleHandleW(L"uxtheme.dll");
 		if (!theme || !control) return;
 		auto allowDarkModeForWindow = reinterpret_cast<AllowDarkModeForWindowFn>(
 			GetProcAddress(theme, reinterpret_cast<LPCSTR>(static_cast<ULONG_PTR>(133))));
-		if (allowDarkModeForWindow) allowDarkModeForWindow(control, TRUE);
+		if (allowDarkModeForWindow) allowDarkModeForWindow(control, dark ? TRUE : FALSE);
 	}
 
 	void ApplyDarkListView(HWND control, HFONT font)
@@ -1203,8 +642,8 @@ namespace
 		SetWindowLongPtrW(control, GWL_EXSTYLE, style);
 		SetWindowPos(control, nullptr, 0, 0, 0, 0,
 			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-		EnableNativeDarkModeForWindow(control);
-		SetWindowTheme(control, L"DarkMode_Explorer", nullptr);
+		SetNativeDarkModeForWindow(control, IsDarkTheme());
+		SetWindowTheme(control, IsDarkTheme() ? L"DarkMode_Explorer" : L"Explorer", nullptr);
 		SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 	}
 
@@ -1216,8 +655,8 @@ namespace
 		SetWindowLongPtrW(control, GWL_EXSTYLE, style);
 		SetWindowPos(control, nullptr, 0, 0, 0, 0,
 			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-		EnableNativeDarkModeForWindow(control);
-		SetWindowTheme(control, L"DarkMode_Explorer", nullptr);
+		SetNativeDarkModeForWindow(control, IsDarkTheme());
+		SetWindowTheme(control, IsDarkTheme() ? L"DarkMode_Explorer" : L"Explorer", nullptr);
 		TreeView_SetBkColor(control, kThemeWindow);
 		TreeView_SetTextColor(control, kThemeText);
 		TreeView_SetLineColor(control, kThemeBorder);
@@ -1473,6 +912,64 @@ namespace
 		SetMenuInfo(menu, &info);
 	}
 
+	const wchar_t* ThemeToggleMenuText()
+	{
+		return IsDarkTheme() ? L"切换到浅色主题" : L"切换到深色主题";
+	}
+
+	void RefreshThemeResources(HWND owner)
+	{
+		SetNativeAppTheme(IsDarkTheme());
+		const BOOL darkFrame = IsDarkTheme() ? TRUE : FALSE;
+		if (g_app.window)
+			DwmSetWindowAttribute(g_app.window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkFrame, sizeof(darkFrame));
+		if (g_about.window)
+			DwmSetWindowAttribute(g_about.window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkFrame, sizeof(darkFrame));
+
+		if (g_app.windowBrush) DeleteObject(g_app.windowBrush);
+		if (g_app.controlBrush) DeleteObject(g_app.controlBrush);
+		if (g_app.panelBrush) DeleteObject(g_app.panelBrush);
+		g_app.windowBrush = CreateSolidBrush(kThemeWindow);
+		g_app.controlBrush = CreateSolidBrush(kThemeControl);
+		g_app.panelBrush = CreateSolidBrush(kThemePanel);
+
+		if (g_app.targetTree)
+		{
+			SetNativeDarkModeForWindow(g_app.targetTree, IsDarkTheme());
+			SetWindowTheme(g_app.targetTree, IsDarkTheme() ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+			TreeView_SetBkColor(g_app.targetTree, kThemeWindow);
+			TreeView_SetTextColor(g_app.targetTree, kThemeText);
+			TreeView_SetLineColor(g_app.targetTree, kThemeBorder);
+		}
+		if (g_app.targetList)
+		{
+			ListView_SetBkColor(g_app.targetList, kThemeWindow);
+			ListView_SetTextBkColor(g_app.targetList, kThemeWindow);
+			ListView_SetTextColor(g_app.targetList, kThemeText);
+			HWND header = ListView_GetHeader(g_app.targetList);
+			SetNativeDarkModeForWindow(header, IsDarkTheme());
+			SetWindowTheme(header, IsDarkTheme() ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+		}
+		ApplyDarkMenu(g_app.configMenu);
+		ApplyDarkMenu(g_app.otherMenu);
+		ApplyDarkMenu(g_app.menu);
+		if (g_app.otherMenu)
+			ModifyMenuW(g_app.otherMenu, ID_OTHER_TOGGLE_THEME, MF_BYCOMMAND | MF_OWNERDRAW,
+				ID_OTHER_TOGGLE_THEME, ThemeToggleMenuText());
+		if (owner)
+			RedrawWindow(owner, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+		if (g_about.window)
+			RedrawWindow(g_about.window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+	}
+
+	void ToggleTheme(HWND owner)
+	{
+		SetThemePalette(IsDarkTheme() ? ThemeMode::Light : ThemeMode::Dark);
+		RefreshThemeResources(owner);
+		if (!SaveThemePreference())
+			MessageBoxW(owner, L"主题已切换，但无法保存到用户目录。", L"保存主题设置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+	}
+
 	void ShiftDirectChildControls(HWND parent, int offsetY)
 	{
 		for (HWND child = GetWindow(parent, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
@@ -1686,7 +1183,7 @@ namespace
 		case ID_TARGET_ADD_VIRTUAL_FOLDER: DrawToolbarFolder(item->hDC, kThemeAccent, centerX, centerY); break;
 		case ID_TARGET_ADD_FILE: DrawToolbarDocument(item->hDC, icon, centerX, centerY); break;
 		case ID_TARGET_ADD_FOLDER:
-			if (SelectedTargetCategory() == TargetDefinitions) DrawToolbarMacro(item->hDC, icon, centerX, centerY);
+			if (targetconfig::SelectedCategory() == targetconfig::CompileDefinitions) DrawToolbarMacro(item->hDC, icon, centerX, centerY);
 			else DrawToolbarFolder(item->hDC, icon, centerX, centerY);
 			break;
 		case ID_TARGET_DELETE:
@@ -1802,7 +1299,7 @@ namespace
 			return CDRF_DODEFAULT;
 		NMTVCUSTOMDRAW* tree = reinterpret_cast<NMTVCUSTOMDRAW*>(const_cast<NMCUSTOMDRAW*>(custom));
 		const bool selected = (custom->uItemState & CDIS_SELECTED) != 0;
-		const TargetTreeItem* item = TargetTreeItemFromHandle(reinterpret_cast<HTREEITEM>(custom->dwItemSpec));
+		const TargetTreeItem* item = targetconfig::TreeItemFromHandle(reinterpret_cast<HTREEITEM>(custom->dwItemSpec));
 		const HWND focus = GetFocus();
 		const bool active = focus == g_app.targetTree || (focus && IsChild(g_app.targetTree, focus));
 		COLORREF text = kThemeText;
@@ -1854,292 +1351,22 @@ namespace
 		return CDRF_SKIPDEFAULT;
 	}
 
-	void PullControls()
-	{
-		g_app.tools.cmake = GetEdit(g_app.edits[0]);
-		g_app.tools.ninja = GetEdit(g_app.edits[1]);
-		g_app.tools.starmClang = GetEdit(g_app.edits[2]);
-		g_app.tools.gdb = GetEdit(g_app.edits[3]);
-		g_app.tools.openocd = GetEdit(g_app.edits[4]);
-		g_app.tools.openocdInterface = InterfaceNameFromControl(g_app.edits[5]);
-		g_app.tools.openocdTarget = GetEdit(g_app.edits[6]);
-		g_app.svd = GetEdit(g_app.edits[7]);
-		g_app.tools.svd = g_app.svd;
-	}
-
-	void PushControls()
-	{
-		SetEdit(g_app.edits[0], g_app.tools.cmake);
-		SetEdit(g_app.edits[1], g_app.tools.ninja);
-		SetEdit(g_app.edits[2], g_app.tools.starmClang);
-		SetEdit(g_app.edits[3], g_app.tools.gdb);
-		SetEdit(g_app.edits[4], g_app.tools.openocd);
-		SetEdit(g_app.edits[6], g_app.tools.openocdTarget);
-		SetEdit(g_app.edits[7], g_app.svd);
-		if (g_app.window)
-		{
-			SetDlgItemTextW(g_app.window, ID_CMAKE, g_app.tools.cmake.c_str());
-			SetDlgItemTextW(g_app.window, ID_NINJA, g_app.tools.ninja.c_str());
-			SetDlgItemTextW(g_app.window, ID_CLANG, g_app.tools.starmClang.c_str());
-			SetDlgItemTextW(g_app.window, ID_GDB, g_app.tools.gdb.c_str());
-			SetDlgItemTextW(g_app.window, ID_OPENOCD, g_app.tools.openocd.c_str());
-			SetDlgItemTextW(g_app.window, ID_OPENOCD_TARGET, g_app.tools.openocdTarget.c_str());
-			SetDlgItemTextW(g_app.window, ID_SVD, g_app.svd.c_str());
-			UpdateOpenOcdConfigControls();
-		}
-		g_app.tools.svd = g_app.svd;
-	}
-
-	const std::wstring &InitialValue(int index)
-	{
-		switch (index)
-		{
-		case 0:
-			return g_app.tools.cmake;
-		case 1:
-			return g_app.tools.ninja;
-		case 2:
-			return g_app.tools.starmClang;
-		case 3:
-			return g_app.tools.gdb;
-		case 4:
-			return g_app.tools.openocd;
-		case 5:
-			return g_app.tools.openocdInterface;
-		case 6:
-			return g_app.tools.openocdTarget;
-		case 7:
-			return g_app.svd;
-		default:
-			return g_app.svd;
-		}
-	}
-
 	void Status(const std::wstring &text)
 	{
 		if (g_app.status)
 			SetWindowTextW(g_app.status, text.c_str());
 	}
 
-	bool Utf8ToWide(const std::string &value, std::wstring &result)
-	{
-		if (value.empty())
-		{
-			result.clear();
-			return true;
-		}
-		const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-			static_cast<int>(value.size()), nullptr, 0);
-		if (length <= 0)
-			return false;
-		result.resize(static_cast<size_t>(length));
-		return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-			static_cast<int>(value.size()), result.data(), length) == length;
-	}
-
-	bool ExtractJsonString(const std::string &json, const char *key, std::string &value)
-	{
-		const std::string marker = std::string("\"") + key + "\"";
-		const size_t keyPosition = json.find(marker);
-		if (keyPosition == std::string::npos)
-			return false;
-		const size_t colon = json.find(':', keyPosition + marker.size());
-		if (colon == std::string::npos)
-			return false;
-		const size_t quote = json.find('"', colon + 1);
-		if (quote == std::string::npos)
-			return false;
-		value.clear();
-		bool escaped = false;
-		for (size_t i = quote + 1; i < json.size(); ++i)
-		{
-			const char current = json[i];
-			if (escaped)
-			{
-				if (current == '"' || current == '\\' || current == '/') value.push_back(current);
-				else if (current == 'n') value.push_back('\n');
-				else if (current == 'r') value.push_back('\r');
-				else if (current == 't') value.push_back('\t');
-				else value.push_back(current);
-				escaped = false;
-				continue;
-			}
-			if (current == '\\') { escaped = true; continue; }
-			if (current == '"') return true;
-			value.push_back(current);
-		}
-		return false;
-	}
-
-	struct VersionParts
-	{
-		int value[3]{};
-	};
-
-	bool ParseVersion(const std::wstring &text, VersionParts &version)
-	{
-		version = {};
-		size_t position = 0;
-		while (position < text.size() && !iswdigit(text[position])) ++position;
-		int component = 0;
-		while (position < text.size() && component < 3)
-		{
-			while (position < text.size() && !iswdigit(text[position])) ++position;
-			if (position == text.size()) break;
-			int number = 0;
-			while (position < text.size() && iswdigit(text[position]))
-			{
-				const int digit = text[position++] - L'0';
-				if (number <= (std::numeric_limits<int>::max() - digit) / 10)
-					number = number * 10 + digit;
-				else
-					number = std::numeric_limits<int>::max();
-			}
-			version.value[component++] = number;
-		}
-		return component > 0;
-	}
-
-	int CompareVersions(const VersionParts &left, const VersionParts &right)
-	{
-		for (size_t i = 0; i < ARRAY_SIZE(left.value); ++i)
-			if (left.value[i] != right.value[i]) return left.value[i] < right.value[i] ? -1 : 1;
-		return 0;
-	}
-
-	bool FetchLatestRelease(LatestRelease &release)
-	{
-		HINTERNET session = WinHttpOpen(L"PathConfigurator/1.0.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-		HINTERNET connection = nullptr;
-		HINTERNET request = nullptr;
-		std::string response;
-		bool requestOk = false;
-		do
-		{
-			if (!session) break;
-			// 更新检查不能影响配置器的交互。网络不可用或代理无响应时快速放弃，
-			// 下次启动再检查即可。
-			WinHttpSetTimeouts(session, 1500, 1500, 2500, 2500);
-			connection = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-			if (!connection) break;
-			request = WinHttpOpenRequest(connection, L"GET", L"/repos/Name-CK/PathConfigurator/releases/latest",
-				nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-			if (!request) break;
-			const wchar_t headers[] = L"Accept: application/vnd.github+json\r\nUser-Agent: PathConfigurator/1.0.0\r\n";
-			if (!WinHttpSendRequest(request, headers, static_cast<DWORD>(-1), WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) break;
-			if (!WinHttpReceiveResponse(request, nullptr)) break;
-			DWORD statusCode = 0;
-			DWORD statusLength = sizeof(statusCode);
-			if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-				WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusLength, WINHTTP_NO_HEADER_INDEX) || statusCode != 200) break;
-			for (;;)
-			{
-				DWORD available = 0;
-				if (!WinHttpQueryDataAvailable(request, &available)) break;
-				if (available == 0) { requestOk = true; break; }
-				if (response.size() + available > 1024 * 1024) break;
-				std::string chunk(available, '\0');
-				DWORD received = 0;
-				if (!WinHttpReadData(request, chunk.data(), available, &received)) break;
-				response.append(chunk.data(), received);
-			}
-		} while (false);
-		if (request) WinHttpCloseHandle(request);
-		if (connection) WinHttpCloseHandle(connection);
-		if (session) WinHttpCloseHandle(session);
-		if (!requestOk) return false;
-
-		std::string tag;
-		std::string url;
-		if (!ExtractJsonString(response, "tag_name", tag) || !Utf8ToWide(tag, release.tag)) return false;
-		if (ExtractJsonString(response, "html_url", url) && !Utf8ToWide(url, release.url)) release.url.clear();
-		if (release.url.empty()) release.url = kGitHubReleasePage;
-		return true;
-	}
-
-	std::wstring GetUpdateCachePath()
-	{
-		const std::wstring settings = GetUserDefaultSettingsPath();
-		const std::wstring directory = GetParentPath(settings);
-		return directory.empty() ? std::wstring{} : JoinPath(directory, L"update-cache.dat");
-	}
-
-	bool WriteUpdateCache(const LatestRelease& release)
-	{
-		const std::wstring path = GetUpdateCachePath();
-		if (path.empty()) return false;
-		const std::wstring directory = GetParentPath(path);
-		if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
-			return false;
-		const std::wstring document = L"PathConfiguratorUpdateCache1\n" + release.tag + L"\n" + release.url;
-		const std::wstring temporary = path + L".tmp";
-		HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-			FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (file == INVALID_HANDLE_VALUE) return false;
-		const DWORD byteCount = static_cast<DWORD>(document.size() * sizeof(wchar_t));
-		DWORD written = 0;
-		const bool ok = WriteFile(file, document.data(), byteCount, &written, nullptr) && written == byteCount;
-		FlushFileBuffers(file);
-		CloseHandle(file);
-		if (!ok || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-		{
-			DeleteFileW(temporary.c_str());
-			return false;
-		}
-		return true;
-	}
-
-	bool ReadUpdateCache(LatestRelease& release)
-	{
-		const std::wstring path = GetUpdateCachePath();
-		HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
-			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-			FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (file == INVALID_HANDLE_VALUE) return false;
-		LARGE_INTEGER size{};
-		if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024 ||
-			(size.QuadPart % sizeof(wchar_t)) != 0)
-		{
-			CloseHandle(file);
-			return false;
-		}
-		std::wstring document(static_cast<size_t>(size.QuadPart / sizeof(wchar_t)), L'\0');
-		DWORD read = 0;
-		const bool ok = ReadFile(file, document.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr) &&
-			read == static_cast<DWORD>(size.QuadPart);
-		CloseHandle(file);
-		if (!ok) return false;
-		const std::wstring marker = L"PathConfiguratorUpdateCache1\n";
-		if (document.rfind(marker, 0) != 0) return false;
-		const size_t tagEnd = document.find(L'\n', marker.size());
-		if (tagEnd == std::wstring::npos) return false;
-		release.tag = document.substr(marker.size(), tagEnd - marker.size());
-		release.url = document.substr(tagEnd + 1);
-		return !release.tag.empty() && !release.url.empty();
-	}
-
-	int RunUpdateCacheCheck()
-	{
-		LatestRelease latest;
-		return FetchLatestRelease(latest) && WriteUpdateCache(latest) ? 0 : 1;
-	}
-
-	std::wstring DisplayVersionTag(std::wstring tag);
-
 	void ApplyCachedUpdate()
 	{
-		LatestRelease latest;
-		VersionParts currentVersion{};
-		VersionParts latestVersion{};
-		if (!g_app.updateLink || !ReadUpdateCache(latest) ||
-			!ParseVersion(kAppVersion, currentVersion) || !ParseVersion(latest.tag, latestVersion) ||
-			CompareVersions(latestVersion, currentVersion) <= 0)
+		update::ReleaseInfo latest;
+		if (!g_app.updateLink || !update::ReadCachedRelease(latest) ||
+			!update::IsNewerThan(kAppVersion, latest.tag))
 		{
 			if (g_app.updateLink) ShowWindow(g_app.updateLink, SW_HIDE);
 			return;
 		}
-		SetWindowTextW(g_app.updateLink, (L"有最新版 " + DisplayVersionTag(latest.tag)).c_str());
+		SetWindowTextW(g_app.updateLink, (L"有最新版 " + update::DisplayVersionTag(latest.tag)).c_str());
 		g_app.updateUrl = std::move(latest.url);
 		ShowWindow(g_app.updateLink, SW_SHOW);
 	}
@@ -2170,13 +1397,6 @@ namespace
 			SetTimer(owner, ID_UPDATE_PROCESS_TIMER, 250, nullptr);
 	}
 
-	std::wstring DisplayVersionTag(std::wstring tag)
-	{
-		if (!tag.empty() && tag.front() != L'v' && tag.front() != L'V')
-			tag.insert(tag.begin(), L'V');
-		return tag;
-	}
-
 	void SetAboutUpdateState(AboutUpdateState state, const std::wstring& message, const std::wstring& url = L"")
 	{
 		g_about.updateState = state;
@@ -2190,16 +1410,14 @@ namespace
 
 	void CompleteAboutUpdateCheck()
 	{
-		LatestRelease latest;
-		VersionParts currentVersion{};
-		VersionParts latestVersion{};
-		if (!ReadUpdateCache(latest) || !ParseVersion(kAppVersion, currentVersion) || !ParseVersion(latest.tag, latestVersion))
+		update::ReleaseInfo latest;
+		if (!update::ReadCachedRelease(latest))
 		{
 			SetAboutUpdateState(AboutUpdateState::Failed, L"检查更新失败");
 			return;
 		}
-		const std::wstring latestTag = DisplayVersionTag(latest.tag);
-		if (CompareVersions(latestVersion, currentVersion) <= 0)
+		const std::wstring latestTag = update::DisplayVersionTag(latest.tag);
+		if (!update::IsNewerThan(kAppVersion, latest.tag))
 		{
 			SetAboutUpdateState(AboutUpdateState::Latest, L"当前已是最新版（" + latestTag + L"）");
 			return;
@@ -2215,7 +1433,7 @@ namespace
 		case WM_CREATE:
 		{
 			g_about.window = hwnd;
-			BOOL darkFrame = TRUE;
+			BOOL darkFrame = IsDarkTheme() ? TRUE : FALSE;
 			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkFrame, sizeof(darkFrame));
 			HWND title = CreateWindowW(L"STATIC", L"STM32 项目配置器", WS_CHILD | WS_VISIBLE,
 				Ui(18), Ui(16), Ui(420), Ui(30), hwnd, nullptr, nullptr, nullptr);
@@ -2333,1198 +1551,22 @@ namespace
 		if (about) ShowWindow(about, SW_SHOWNORMAL);
 	}
 
-	ToolPaths SharedTools(const ToolPaths &tools)
-	{
-		ToolPaths shared = tools;
-		shared.svd.clear();
-		shared.openocdTarget.clear();
-		return shared;
-	}
-
-	bool SamePath(const std::wstring &left, const std::wstring &right)
-	{
-		return _wcsicmp(NormalizePath(left).c_str(), NormalizePath(right).c_str()) == 0;
-	}
-
-	bool SameSharedTools(const ToolPaths &left, const ToolPaths &right)
-	{
-		return SamePath(left.cmake, right.cmake) && SamePath(left.ninja, right.ninja) &&
-			SamePath(left.starmClang, right.starmClang) && SamePath(left.gdb, right.gdb) &&
-			SamePath(left.openocd, right.openocd) &&
-			_wcsicmp(Trim(left.openocdInterface).c_str(), Trim(right.openocdInterface).c_str()) == 0;
-	}
-
-	bool HasAnySharedTool(const ToolPaths &tools)
-	{
-		return !tools.cmake.empty() || !tools.ninja.empty() || !tools.starmClang.empty() ||
-			!tools.gdb.empty() || !tools.openocd.empty() || !tools.openocdInterface.empty();
-	}
-
-	bool HasCompleteSharedToolchain(const ToolPaths &tools)
-	{
-		return !tools.cmake.empty() && !tools.ninja.empty() && !tools.starmClang.empty() &&
-			!tools.gdb.empty() && !tools.openocd.empty();
-	}
-
-	void MergeSharedTools(ToolPaths &destination, const ToolPaths &source, bool overwrite)
-	{
-		std::wstring *destinationValues[] = {
-			&destination.cmake, &destination.ninja, &destination.starmClang, &destination.gdb,
-			&destination.openocd, &destination.openocdInterface};
-		const std::wstring *sourceValues[] = {
-			&source.cmake, &source.ninja, &source.starmClang, &source.gdb,
-			&source.openocd, &source.openocdInterface};
-		for (size_t i = 0; i < ARRAY_SIZE(destinationValues); ++i) {
-			if (!sourceValues[i]->empty() && (overwrite || destinationValues[i]->empty()))
-				*destinationValues[i] = *sourceValues[i];
-		}
-	}
-
-	std::wstring DescribeSharedTools(const ToolPaths &tools)
-	{
-		struct Entry { const wchar_t *name; const std::wstring *path; } entries[] = {
-			{L"CMake", &tools.cmake}, {L"Ninja", &tools.ninja}, {L"starm-clang", &tools.starmClang},
-			{L"ARM GDB", &tools.gdb}, {L"OpenOCD", &tools.openocd}, {L"调试器", &tools.openocdInterface}};
-		std::wstring text;
-		for (const Entry &entry : entries) {
-			if (!entry.path->empty()) text += std::wstring(entry.name) + L"：" + *entry.path + L"\r\n";
-		}
-		return text.empty() ? L"（没有有效的默认工具路径）\r\n" : text;
-	}
-
-	void SanitizeCurrentTools()
-	{
-		PullControls();
-		SanitizeToolPaths(g_app.tools);
-		g_app.svd = g_app.tools.svd;
-	}
-
-	enum class BackupChoice
-	{
-		Cancel,
-		Skip,
-		Create
-	};
-
-	BackupChoice ConfirmGenerateBackups(HWND owner, const std::vector<std::wstring>& candidates)
-	{
-		std::vector<std::wstring> files;
-		for (const std::wstring& candidate : candidates)
-		{
-			if (candidate.empty()) continue;
-			bool alreadyListed = false;
-			for (const std::wstring& existing : files)
-				if (SamePath(existing, candidate)) { alreadyListed = true; break; }
-			if (!alreadyListed) files.push_back(candidate);
-		}
-		if (files.empty()) return BackupChoice::Skip;
-
-		std::wstring message = L"本次操作将会修改/创建以下文件，是否进行备份：\r\n\r\n";
-		for (const std::wstring& file : files)
-			message += file + L"\r\n";
-		const int choice = MessageBoxW(owner, message.c_str(), L"生成文件备份",
-			MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_TOPMOST);
-		if (choice == IDYES) return BackupChoice::Create;
-		if (choice == IDNO) return BackupChoice::Skip;
-		return BackupChoice::Cancel;
-	}
-
-	std::vector<std::wstring> ToolchainConfigurationFiles()
-	{
-		return {
-			g_app.workspace.settingsPath,
-			g_app.workspace.presetsPath,
-			JoinPath(g_app.workspace.toolchainRoot, L"cmake\\PathConfiguratorCompilerCompat.cmake"),
-			JoinPath(g_app.workspace.toolchainRoot, L"CMakeLists.txt")
-		};
-	}
-
-	std::vector<std::wstring> CmakeTargetConfigurationFiles()
-	{
-		return {
-			g_app.workspace.cmakeTargetConfigPath,
-			g_app.workspace.cmakeTargetModulePath,
-			JoinPath(g_app.workspace.toolchainRoot, L"CMakeLists.txt")
-		};
-	}
-
-	void ApplyOpenOcdDefaults()
-	{
-		if (FileExists(g_app.tools.openocd) && g_app.tools.openocdInterface.empty()) {
-			g_app.tools.openocdInterface = L"cmsis-dap";
-			SanitizeToolPaths(g_app.tools);
-		}
-		if (g_app.tools.openocdTarget.empty())
-			g_app.tools.openocdTarget = FindOpenOcdTargetForChip(g_app.tools.openocd, g_app.chipType);
-	}
-
-	bool TryAutoFillSvdFromCurrentCubeClt()
-	{
-		if (!g_app.svd.empty() && FileExists(g_app.svd))
-			return false;
-		const std::wstring *candidates[] = {
-			&g_app.tools.cmake, &g_app.tools.ninja, &g_app.tools.starmClang, &g_app.tools.gdb};
-		for (const std::wstring *candidate : candidates)
-		{
-			if (candidate->empty()) continue;
-			ToolPaths detected;
-			std::wstring cubeRoot, report;
-			if (!DetectCubeClt(*candidate, detected, cubeRoot, report)) continue;
-			const std::wstring svd = FindSvdForChip(cubeRoot, g_app.chipType);
-			if (!svd.empty() && FileExists(svd)) {
-				g_app.svd = svd;
-				g_app.tools.svd = svd;
-				return true;
-			}
-		}
-		return false;
-	}
 
 	void ClearCurrentConfiguration(HWND owner)
 	{
-		if (MessageBoxW(owner, L"清空当前界面中的全部路径、调试和 CMake 目标配置？\r\n\r\n此操作不会修改或删除任何 settings.json、默认配置、CMakeUserPresets.json 或 project-config.json 文件。",
+		if (MessageBoxW(owner, L"清空当前界面中的全部路径、调试配置和 CMake 构建目标配置？\r\n\r\n此操作不会修改或删除任何 settings.json、默认配置、CMakeUserPresets.json 或 project-config.json 文件。",
 			L"清空配置", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) != IDYES)
 			return;
 		g_app.tools = {};
 		g_app.svd.clear();
 		g_app.cmakeTarget = {};
 		g_app.selectedVirtualFolder.clear();
-		PushControls();
-		if (SelectedTargetCategory() == TargetSources) RefreshSourceConfigurationViews();
-		else RefreshTargetList();
+		toolchain::PushControls(g_app);
+		if (targetconfig::SelectedCategory() == targetconfig::Sources) targetconfig::RefreshSourceViews();
+		else targetconfig::RefreshList();
 		Status(L"已清空当前界面配置；尚未修改任何文件。");
 	}
 
-	void OfferRegistryClt(HWND owner, bool showMissing)
-	{
-		ToolPaths registryTools;
-		std::wstring registryRoot, registryReport;
-		if (!DetectCubeCltFromRegistry(registryTools, registryRoot, registryReport)) {
-			if (showMissing)
-				MessageBoxW(owner, L"未在注册表中找到有效的 STM32CubeCLT 安装记录。", L"检查 STM32CubeCLT", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-			return;
-		}
-		SanitizeToolPaths(registryTools);
-		const std::wstring registrySvd = FindSvdForChip(registryRoot, g_app.chipType);
-		if (!registrySvd.empty()) registryReport += L"SVD：" + registrySvd + L"\r\n";
-		const std::wstring prompt = L"检测到注册表中的 STM32CubeCLT 工具：\r\n\r\n" + registryReport +
-			L"\r\n是否补充到当前配置界面？\r\n已有的有效工具路径不会被覆盖。";
-		if (MessageBoxW(owner, prompt.c_str(), L"检查 STM32CubeCLT", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) != IDYES)
-			return;
-		MergeSharedTools(g_app.tools, registryTools, false);
-		if (g_app.svd.empty() && !registrySvd.empty()) g_app.svd = registrySvd;
-		g_app.tools.svd = g_app.svd;
-		ApplyOpenOcdDefaults();
-		PushControls();
-		Status(L"已补充注册表检测到的 STM32CubeCLT 工具路径。");
-	}
-
-	void OfferUserDefaultsOnStartup(HWND owner, bool hasProjectSettings)
-	{
-		if (HasCompleteSharedToolchain(g_app.tools))
-			return;
-		ToolPaths defaults;
-		std::wstring error;
-		if (!LoadUserDefaultSettings(defaults, error) || !HasAnySharedTool(defaults)) {
-			OfferRegistryClt(owner, false);
-			return;
-		}
-		const std::wstring reason = hasProjectSettings
-			? L"工程 .vscode/settings.json 中存在缺失或无效的工具路径。"
-			: L"未检测到可用的工程 .vscode/settings.json。";
-		const std::wstring prompt = reason + L"\r\n\r\n是否使用已有默认配置补充当前工程？\r\n\r\n" +
-			DescribeSharedTools(defaults) + L"\r\n工程中已有的有效路径不会被覆盖。";
-		if (MessageBoxW(owner, prompt.c_str(), L"读取默认配置", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) != IDYES)
-			return;
-		MergeSharedTools(g_app.tools, defaults, false);
-		ApplyOpenOcdDefaults();
-		if (!HasCompleteSharedToolchain(g_app.tools)) {
-			MessageBoxW(owner, L"默认配置未能补齐全部工具路径，将继续检查注册表中的 STM32CubeCLT。",
-				L"默认配置不完整", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-			OfferRegistryClt(owner, false);
-		}
-	}
-
-	void ReadUserDefaultsFromMenu(HWND owner)
-	{
-		PullControls();
-		ToolPaths defaults;
-		std::wstring error;
-		if (!LoadUserDefaultSettings(defaults, error)) {
-			MessageBoxW(owner, error.c_str(), L"读取默认配置", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-			return;
-		}
-		if (!HasAnySharedTool(defaults)) {
-			MessageBoxW(owner, L"默认配置中没有有效的工具路径。", L"读取默认配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return;
-		}
-		const std::wstring prompt = L"是否读取下列默认配置？\r\n\r\n" + DescribeSharedTools(defaults) +
-			L"\r\n这会替换界面中的共享工具路径；不会修改 SVD 或 target。";
-		if (MessageBoxW(owner, prompt.c_str(), L"读取默认配置", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) != IDYES)
-			return;
-		MergeSharedTools(g_app.tools, defaults, true);
-		ApplyOpenOcdDefaults();
-		const bool foundSvd = TryAutoFillSvdFromCurrentCubeClt();
-		PushControls();
-		Status(foundSvd ? L"已读取默认配置，并从 STM32CubeCLT 自动匹配当前芯片的 SVD 文件。"
-			: L"已读取默认配置；未找到当前芯片的 SVD，保留现有 SVD 与目标配置文件。");
-	}
-
-	void SaveUserDefaultsFromMenu(HWND owner)
-	{
-		SanitizeCurrentTools();
-		ToolPaths defaults = SharedTools(g_app.tools);
-		ValidationResult validation = ValidateTools(defaults, false);
-		if (!validation.ok) {
-			MessageBoxW(owner, (L"默认配置需要完整且有效的共享工具路径：\r\n" + validation.message).c_str(),
-				L"保存默认配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return;
-		}
-		std::wstring error;
-		const BackupChoice backup = ConfirmGenerateBackups(owner, {GetUserDefaultSettingsPath()});
-		if (backup == BackupChoice::Cancel) {
-			Status(L"已取消保存默认配置。");
-			return;
-		}
-		const bool createBackup = backup == BackupChoice::Create;
-		if (!WriteUserDefaultSettings(defaults, error, createBackup)) {
-			MessageBoxW(owner, error.c_str(), L"保存默认配置", MB_OK | MB_ICONERROR | MB_TOPMOST);
-			return;
-		}
-		Status(L"已保存本机默认工具配置。");
-	}
-
-	bool ShouldUpdateUserDefaults(HWND owner)
-	{
-		ToolPaths defaults = SharedTools(g_app.tools);
-		ToolPaths cached;
-		std::wstring error;
-		const bool hasCache = LoadUserDefaultSettings(cached, error);
-		if (hasCache && SameSharedTools(defaults, cached))
-			return false;
-		const std::wstring prompt = L"当前工程的共享工具路径与默认配置不同。\r\n\r\n是否更新本机默认配置？\r\n\r\n" +
-			DescribeSharedTools(defaults) + L"\r\n不会保存 SVD 或 target。";
-		return MessageBoxW(owner, prompt.c_str(), L"更新默认配置", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES;
-	}
-
-	std::wstring SelectFile(HWND owner, const wchar_t *expectedName)
-	{
-		wchar_t path[4096]{};
-		OPENFILENAMEW ofn{};
-		ofn.lStructSize = sizeof(ofn);
-		ofn.hwndOwner = owner;
-		ofn.lpstrFile = path;
-		ofn.nMaxFile = static_cast<DWORD>(ARRAY_SIZE(path));
-		const bool isSvd = _wcsicmp(expectedName, L".svd") == 0;
-		std::wstring filter = isSvd ? L"SVD 文件 (*.svd)" : expectedName;
-		filter.push_back(L'\0');
-		filter += isSvd ? L"*.svd" : expectedName;
-		filter.push_back(L'\0');
-		filter += L"所有文件";
-		filter.push_back(L'\0');
-		filter += L"*.*";
-		filter.push_back(L'\0');
-		filter.push_back(L'\0');
-		std::wstring title = std::wstring(L"选择 ") + expectedName;
-		ofn.lpstrFilter = filter.c_str();
-		ofn.lpstrTitle = title.c_str();
-		ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-		if (GetOpenFileNameW(&ofn) == TRUE)
-		{
-			QueueDarkMenuSeparatorRepaint(owner);
-			return NormalizePath(path);
-		}
-		QueueDarkMenuSeparatorRepaint(owner);
-		return {};
-	}
-
-	bool AddCmakePathValue(HWND owner, const std::wstring& selected, bool isFolder);
-
-	bool AppendShellItemPath(IShellItem* item, std::vector<std::wstring>& paths)
-	{
-		if (!item) return false;
-		PWSTR raw = nullptr;
-		if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return false;
-		paths.push_back(NormalizePath(raw));
-		CoTaskMemFree(raw);
-		return true;
-	}
-
-	bool CollectCurrentDialogPaths(IFileDialog* dialog, bool isFolder, std::vector<std::wstring>& paths)
-	{
-		if (isFolder)
-		{
-			IShellItem* item = nullptr;
-			HRESULT result = dialog->GetCurrentSelection(&item);
-			if (FAILED(result) || !item) result = dialog->GetFolder(&item);
-			if (SUCCEEDED(result) && item)
-			{
-				AppendShellItemPath(item, paths);
-				item->Release();
-			}
-			return !paths.empty();
-		}
-
-		IFileOpenDialog* openDialog = nullptr;
-		if (FAILED(dialog->QueryInterface(IID_IFileOpenDialog, reinterpret_cast<void**>(&openDialog))))
-			return false;
-		IShellItemArray* items = nullptr;
-		if (SUCCEEDED(openDialog->GetSelectedItems(&items)) && items)
-		{
-			DWORD count = 0;
-			items->GetCount(&count);
-			for (DWORD index = 0; index < count; ++index)
-			{
-				IShellItem* item = nullptr;
-				if (SUCCEEDED(items->GetItemAt(index, &item)) && item)
-				{
-					AppendShellItemPath(item, paths);
-					item->Release();
-				}
-			}
-			items->Release();
-		}
-		openDialog->Release();
-		return !paths.empty();
-	}
-
-	bool CollectFinalDialogPaths(IFileOpenDialog* dialog, bool isFolder, std::vector<std::wstring>& paths)
-	{
-		if (isFolder)
-		{
-			IShellItem* item = nullptr;
-			if (SUCCEEDED(dialog->GetResult(&item)) && item)
-			{
-				AppendShellItemPath(item, paths);
-				item->Release();
-			}
-			return !paths.empty();
-		}
-
-		IShellItemArray* items = nullptr;
-		if (SUCCEEDED(dialog->GetResults(&items)) && items)
-		{
-			DWORD count = 0;
-			items->GetCount(&count);
-			for (DWORD index = 0; index < count; ++index)
-			{
-				IShellItem* item = nullptr;
-				if (SUCCEEDED(items->GetItemAt(index, &item)) && item)
-				{
-					AppendShellItemPath(item, paths);
-					item->Release();
-				}
-			}
-			items->Release();
-		}
-		return !paths.empty();
-	}
-
-	bool PostCmakeDialogResult(const CMakeDialogRequest& request, std::vector<std::wstring> paths)
-	{
-		CMakeDialogResult* result = new CMakeDialogResult{};
-		result->paths = std::move(paths);
-		result->isFolder = request.isFolder;
-		if (PostMessageW(request.owner, WM_APP_CMAKE_DIALOG_RESULT, 0, reinterpret_cast<LPARAM>(result)))
-			return true;
-		delete result;
-		return false;
-	}
-
-	class CMakeDialogEvents final : public IFileDialogEvents
-	{
-	public:
-		explicit CMakeDialogEvents(const CMakeDialogRequest& request) : request_(request) {}
-
-		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
-		{
-			if (!object) return E_POINTER;
-			*object = nullptr;
-			if (IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, IID_IFileDialogEvents))
-			{
-				*object = static_cast<IFileDialogEvents*>(this);
-				AddRef();
-				return S_OK;
-			}
-			return E_NOINTERFACE;
-		}
-
-		ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
-		ULONG STDMETHODCALLTYPE Release() override
-		{
-			const ULONG references = static_cast<ULONG>(InterlockedDecrement(&references_));
-			if (references == 0) delete this;
-			return references;
-		}
-
-		HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* dialog) override
-		{
-			if (!resultPosted_)
-			{
-				std::vector<std::wstring> paths;
-				if (CollectCurrentDialogPaths(dialog, request_.isFolder, paths))
-					resultPosted_ = PostCmakeDialogResult(request_, std::move(paths));
-			}
-			return S_OK;
-		}
-
-		HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
-		HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
-		HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
-		HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override
-		{
-			if (response) *response = FDESVR_DEFAULT;
-			return S_OK;
-		}
-		HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
-		HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override
-		{
-			if (response) *response = FDEOR_DEFAULT;
-			return S_OK;
-		}
-
-		bool ResultPosted() const { return resultPosted_; }
-
-	private:
-		LONG references_ = 1;
-		CMakeDialogRequest request_;
-		bool resultPosted_ = false;
-	};
-
-	DWORD WINAPI CMakePathDialogThread(void* parameter)
-	{
-		CMakeDialogRequest* request = static_cast<CMakeDialogRequest*>(parameter);
-		const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-		IFileOpenDialog* dialog = nullptr;
-		CMakeDialogEvents* events = nullptr;
-		DWORD eventCookie = 0;
-		HRESULT showResult = E_FAIL;
-		if (SUCCEEDED(initialized) && SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
-			CLSCTX_INPROC_SERVER, IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog))))
-		{
-			FILEOPENDIALOGOPTIONS options{};
-			dialog->GetOptions(&options);
-			options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_DONTADDTORECENT | FOS_NOCHANGEDIR;
-			if (request->isFolder) options |= FOS_PICKFOLDERS;
-			else options |= FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT;
-			dialog->SetOptions(options);
-			dialog->SetTitle(request->title.c_str());
-			if (!request->isFolder)
-			{
-				const COMDLG_FILTERSPEC filters[] = {
-					{L"C/C++/汇编源文件 (*.c;*.cc;*.cpp;*.s;*.asm)", L"*.c;*.cc;*.cp;*.cpp;*.cxx;*.s;*.S;*.asm"},
-					{L"所有文件", L"*.*"}
-				};
-				dialog->SetFileTypes(static_cast<UINT>(ARRAY_SIZE(filters)), filters);
-				dialog->SetFileTypeIndex(1);
-			}
-			IShellItem* initialItem = nullptr;
-			if (SUCCEEDED(SHCreateItemFromParsingName(request->root.c_str(), nullptr,
-				IID_IShellItem, reinterpret_cast<void**>(&initialItem))))
-			{
-				dialog->SetFolder(initialItem);
-				initialItem->Release();
-			}
-
-			events = new CMakeDialogEvents(*request);
-			const bool advised = SUCCEEDED(dialog->Advise(events, &eventCookie));
-			showResult = dialog->Show(request->owner);
-			if (SUCCEEDED(showResult) && !events->ResultPosted())
-			{
-				std::vector<std::wstring> paths;
-				CollectFinalDialogPaths(dialog, request->isFolder, paths);
-				PostCmakeDialogResult(*request, std::move(paths));
-			}
-			else if (FAILED(showResult) && !events->ResultPosted())
-			{
-				PostCmakeDialogResult(*request, {});
-			}
-			if (advised) dialog->Unadvise(eventCookie);
-			events->Release();
-		}
-		else
-		{
-			PostCmakeDialogResult(*request, {});
-		}
-
-		if (dialog) dialog->Release();
-		if (SUCCEEDED(initialized)) CoUninitialize();
-		PostMessageW(request->owner, WM_APP_CMAKE_DIALOG_CLEANUP_COMPLETE, 0, 0);
-		delete request;
-		return 0;
-	}
-
-	void BeginCmakePathDialog(HWND owner, bool isFolder)
-	{
-		if (SelectedTargetCategory() == TargetSources && g_app.targetListReadOnly) return;
-		if (g_app.cmakeDialogOpen)
-		{
-			Status(L"文件选择器正在关闭，请稍候。");
-			return;
-		}
-		const int category = SelectedTargetCategory();
-		CMakeDialogRequest* request = new CMakeDialogRequest{};
-		request->owner = owner;
-		request->root = g_app.workspace.root;
-		request->isFolder = isFolder;
-		request->title = isFolder
-			? (category == TargetSources ? L"选择递归加入的源目录" : L"选择要加入 CMake 的目录")
-			: L"选择要加入 CMake 目标的源文件";
-		g_app.cmakeDialogOpen = true;
-		++g_app.cmakeDialogWorkers;
-		HANDLE thread = CreateThread(nullptr, 0, CMakePathDialogThread, request, 0, nullptr);
-		if (thread)
-		{
-			CloseHandle(thread);
-			return;
-		}
-		--g_app.cmakeDialogWorkers;
-		g_app.cmakeDialogOpen = false;
-		delete request;
-		MessageBoxW(owner, L"无法创建文件选择器工作线程。", L"添加 CMake 项", MB_OK | MB_ICONERROR | MB_TOPMOST);
-	}
-
-	bool AddCmakePathValue(HWND owner, const std::wstring& selected, bool isFolder)
-	{
-		const int category = SelectedTargetCategory();
-		std::wstring relative;
-		if (!MakeToolchainRelativePath(g_app.workspace, selected, isFolder, relative)) {
-			MessageBoxW(owner, L"所选路径无法转换为相对于 .ioc 指定 CMake 目录的路径。\r\n请选择与当前工程位于同一磁盘分区的文件或文件夹。",
-				L"无法添加 CMake 项", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return false;
-		}
-		if (category == TargetSources) {
-			for (const TargetSourceEntry& entry : g_app.cmakeTarget.sources) {
-				if (entry.isFolder == isFolder && SameConfigValue(entry.path, relative)) return false;
-			}
-			g_app.cmakeTarget.sources.push_back({relative, isFolder, CurrentVirtualFolder()});
-		} else {
-			std::vector<std::wstring>* values = category == TargetIncludes ? &g_app.cmakeTarget.includeDirectories : &g_app.cmakeTarget.linkDirectories;
-			for (const std::wstring& value : *values) if (SameConfigValue(value, relative)) return false;
-			values->push_back(relative);
-		}
-		if (category == TargetSources) RefreshSourceConfigurationViews();
-		else RefreshTargetList();
-		Status(L"已加入 CMake 目标配置；点击“保存 CMake 目标配置”后写入工程文件。");
-		return true;
-	}
-
-	bool CommitTargetListEdit(HWND owner, int row, const std::wstring& input)
-	{
-		if (g_app.targetListReadOnly) return false;
-		const std::wstring value = Trim(input);
-		if (value.empty()) return false;
-		const int category = SelectedTargetCategory();
-		if (category == TargetDefinitions) {
-			std::vector<std::wstring>& values = g_app.cmakeTarget.compileDefinitions;
-			if (row < 0 || static_cast<size_t>(row) > values.size()) return false;
-			for (size_t i = 0; i < values.size(); ++i)
-				if (static_cast<int>(i) != row && SameConfigValue(values[i], value)) return false;
-			if (static_cast<size_t>(row) == values.size()) values.push_back(value);
-			else values[static_cast<size_t>(row)] = value;
-		} else {
-			std::wstring candidate = value;
-			const bool rootRelative = !candidate.empty() && (candidate.front() == L'\\' || candidate.front() == L'/') &&
-				!(candidate.size() > 1 && (candidate[1] == L'\\' || candidate[1] == L'/'));
-			if (rootRelative) candidate.erase(0, 1);
-			if (rootRelative || PathIsRelativeW(candidate.c_str())) candidate = JoinPath(g_app.workspace.root, candidate);
-			candidate = NormalizePath(candidate);
-			const bool isFile = FileExists(candidate);
-			const bool isFolder = FolderExists(candidate);
-			if (!isFile && !isFolder) {
-				MessageBoxW(owner, (L"路径不存在：\r\n" + candidate).c_str(), L"无法编辑 CMake 项", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-				return false;
-			}
-			if (category != TargetSources && !isFolder) {
-				MessageBoxW(owner, L"当前配置类别仅接受文件夹路径。", L"无法编辑 CMake 项", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-				return false;
-			}
-			std::wstring relative;
-			if (!MakeToolchainRelativePath(g_app.workspace, candidate, isFolder, relative)) {
-				MessageBoxW(owner, L"所选路径无法转换为相对于 .ioc 指定 CMake 目录的路径。", L"无法编辑 CMake 项", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-				return false;
-			}
-			if (category == TargetSources) {
-				std::vector<TargetSourceEntry>& values = g_app.cmakeTarget.sources;
-				if (row < 0 || static_cast<size_t>(row) > g_app.targetSourceRows.size()) return false;
-				const size_t sourceIndex = static_cast<size_t>(row) == g_app.targetSourceRows.size()
-					? values.size() : g_app.targetSourceRows[static_cast<size_t>(row)];
-				for (size_t i = 0; i < values.size(); ++i)
-					if (i != sourceIndex && SameVirtualFolder(values[i].virtualFolder, CurrentVirtualFolder()) &&
-						values[i].isFolder == isFolder && SameConfigValue(values[i].path, relative)) return false;
-				if (sourceIndex == values.size()) values.push_back({relative, isFolder, CurrentVirtualFolder()});
-				else values[sourceIndex] = {relative, isFolder, CurrentVirtualFolder()};
-			} else {
-				std::vector<std::wstring>& values = category == TargetIncludes ? g_app.cmakeTarget.includeDirectories : g_app.cmakeTarget.linkDirectories;
-				if (row < 0 || static_cast<size_t>(row) > values.size()) return false;
-				for (size_t i = 0; i < values.size(); ++i)
-					if (static_cast<int>(i) != row && SameConfigValue(values[i], relative)) return false;
-				if (static_cast<size_t>(row) == values.size()) values.push_back(relative);
-				else values[static_cast<size_t>(row)] = relative;
-			}
-		}
-		if (category == TargetSources) RefreshSourceConfigurationViews();
-		else RefreshTargetList();
-		Status(L"已更新 CMake 目标配置；点击“保存 CMake 目标配置”后写入工程文件。");
-		return true;
-	}
-
-	struct PhysicalSourceTarget
-	{
-		std::wstring path;
-		bool isFolder = false;
-	};
-
-	bool IsPathWithinFolder(const std::wstring& path, const std::wstring& folder)
-	{
-		if (path.size() <= folder.size() || _wcsnicmp(path.c_str(), folder.c_str(), folder.size()) != 0)
-			return false;
-		return path[folder.size()] == L'\\' || path[folder.size()] == L'/';
-	}
-
-	std::vector<PhysicalSourceTarget> CollectPhysicalSourceTargets(const std::vector<int>& sourceIndices)
-	{
-		std::vector<PhysicalSourceTarget> targets;
-		for (int index : sourceIndices)
-		{
-			if (index < 0 || static_cast<size_t>(index) >= g_app.cmakeTarget.sources.size()) continue;
-			const TargetSourceEntry& source = g_app.cmakeTarget.sources[static_cast<size_t>(index)];
-			const std::wstring path = NormalizePath(JoinPath(g_app.workspace.toolchainRoot, source.path));
-			if ((source.isFolder && !FolderExists(path)) || (!source.isFolder && !FileExists(path))) continue;
-			bool redundant = false;
-			for (const PhysicalSourceTarget& existing : targets)
-			{
-				if (SameConfigValue(existing.path, path) || (existing.isFolder && IsPathWithinFolder(path, existing.path)))
-				{
-					redundant = true;
-					break;
-				}
-			}
-			if (redundant) continue;
-			// 若稍后遇到父目录，移除先前收集到的内部文件/目录，避免回收站操作重复处理同一路径。
-			if (source.isFolder)
-			{
-				targets.erase(std::remove_if(targets.begin(), targets.end(), [&path](const PhysicalSourceTarget& existing) {
-					return IsPathWithinFolder(existing.path, path);
-				}), targets.end());
-			}
-			targets.push_back({path, source.isFolder});
-		}
-		return targets;
-	}
-
-	std::wstring FormatPhysicalSourceTargetList(const std::vector<PhysicalSourceTarget>& targets)
-	{
-		std::wstring text;
-		constexpr size_t shownLimit = 8;
-		for (size_t i = 0; i < targets.size() && i < shownLimit; ++i)
-			text += (targets[i].isFolder ? L"[目录] " : L"[文件] ") + targets[i].path + L"\r\n";
-		if (targets.size() > shownLimit)
-			text += L"... 以及 " + std::to_wstring(targets.size() - shownLimit) + L" 项\r\n";
-		return text;
-	}
-
-	bool RecyclePhysicalTargets(HWND owner, const std::vector<PhysicalSourceTarget>& targets)
-	{
-		if (targets.empty()) return true;
-		std::wstring paths;
-		for (const PhysicalSourceTarget& target : targets)
-		{
-			paths += target.path;
-			paths.push_back(L'\0');
-		}
-		paths.push_back(L'\0');
-		SHFILEOPSTRUCTW operation{};
-		operation.hwnd = owner;
-		operation.wFunc = FO_DELETE;
-		operation.pFrom = paths.c_str();
-		operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-		const int result = SHFileOperationW(&operation);
-		if (result != 0 || operation.fAnyOperationsAborted)
-		{
-			MessageBoxW(owner, L"未能完成移到回收站；未继续执行删除操作。",
-				L"删除本地文件失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
-			return false;
-		}
-		return true;
-	}
-
-	void EraseSourceIndices(std::vector<int> indices)
-	{
-		std::sort(indices.begin(), indices.end());
-		indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
-		for (auto index = indices.rbegin(); index != indices.rend(); ++index)
-			if (*index >= 0 && static_cast<size_t>(*index) < g_app.cmakeTarget.sources.size())
-				g_app.cmakeTarget.sources.erase(g_app.cmakeTarget.sources.begin() + *index);
-	}
-
-	bool DeleteSourceConfigurationItems(HWND owner, const std::vector<int>& sourceIndices, const std::wstring& title, const std::wstring& prompt)
-	{
-		if (sourceIndices.empty() && title.empty()) return false;
-		const std::vector<PhysicalSourceTarget> physicalTargets = CollectPhysicalSourceTargets(sourceIndices);
-		std::wstring message = prompt + L"\r\n\r\n是：移除工程配置，并将以下实际文件/目录移到回收站。\r\n";
-		message += physicalTargets.empty() ? L"（没有可删除的实际文件或目录）\r\n" : FormatPhysicalSourceTargetList(physicalTargets);
-		message += L"否：仅移除工程配置，不改动本地文件。\r\n取消：取消本次操作。";
-		const int choice = MessageBoxW(owner, message.c_str(), title.empty() ? L"删除 CMake 配置" : title.c_str(),
-			MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST);
-		if (choice == IDCANCEL)
-			return false;
-		if (choice == IDYES && !RecyclePhysicalTargets(owner, physicalTargets)) return false;
-		EraseSourceIndices(sourceIndices);
-		RefreshSourceConfigurationViews();
-		Status(choice == IDYES ? L"已删除 CMake 配置，并将实际目标移到回收站。" : L"已删除 CMake 配置，本地文件未改动。");
-		return true;
-	}
-
-	void DeletePhysicalTargetsWithoutConfiguration(HWND owner, const std::vector<PhysicalSourceTarget>& targets)
-	{
-		if (targets.empty()) return;
-		const std::wstring message = L"是否删除本地选中的 " + std::to_wstring(targets.size()) +
-			L" 个文件/目录？\r\n\r\n" + FormatPhysicalSourceTargetList(targets) +
-			L"是：将实际文件/目录移到回收站。\r\n否：仅移除工程配置；当前选择没有对应工程配置，因此不执行删除。\r\n取消：取消本次操作。";
-		const int choice = MessageBoxW(owner, message.c_str(), L"删除本地文件/目录",
-			MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST);
-		if (choice == IDYES)
-		{
-			if (!RecyclePhysicalTargets(owner, targets)) return;
-			RefreshSourceConfigurationViews();
-			Status(L"已将选中的本地文件/目录移到回收站；CMake 配置未改动。");
-		}
-		else if (choice == IDNO)
-			Status(L"当前选择没有可移除的工程配置，本地文件未改动。");
-	}
-
-	void DeletePhysicalBrowserEntries(HWND owner)
-	{
-		std::vector<PhysicalSourceTarget> targets;
-		for (int row : SelectedTargetListRows())
-		{
-			if (row < 0 || static_cast<size_t>(row) >= g_app.physicalBrowserRows.size()) continue;
-			const PhysicalBrowserEntry& entry = g_app.physicalBrowserRows[static_cast<size_t>(row)];
-			if ((entry.isFolder && FolderExists(entry.path)) || (!entry.isFolder && FileExists(entry.path)))
-				targets.push_back({entry.path, entry.isFolder});
-		}
-		DeletePhysicalTargetsWithoutConfiguration(owner, targets);
-	}
-
-	void DeleteVirtualFolder(HWND owner, const std::wstring& rawFolder)
-	{
-		const std::wstring folder = NormalizeVirtualFolderPath(rawFolder);
-		if (folder.empty()) return;
-		std::vector<int> sourceIndices;
-		for (size_t i = 0; i < g_app.cmakeTarget.sources.size(); ++i)
-			if (IsVirtualFolderOrDescendant(g_app.cmakeTarget.sources[i].virtualFolder, folder))
-				sourceIndices.push_back(static_cast<int>(i));
-		const std::wstring prompt = L"删除虚拟文件夹“" + folder + L"”及其下级虚拟文件夹？\r\n\r\n" +
-			L"将移除 " + std::to_wstring(sourceIndices.size()) + L" 个 CMake 配置项。";
-		if (!DeleteSourceConfigurationItems(owner, sourceIndices, L"删除虚拟文件夹", prompt)) return;
-		g_app.cmakeTarget.virtualFolders.erase(
-			std::remove_if(g_app.cmakeTarget.virtualFolders.begin(), g_app.cmakeTarget.virtualFolders.end(),
-				[&folder](const std::wstring& item) { return IsVirtualFolderOrDescendant(item, folder); }),
-			g_app.cmakeTarget.virtualFolders.end());
-		g_app.selectedVirtualFolder = ParentVirtualFolder(folder);
-		RefreshSourceConfigurationViews();
-	}
-
-	void DeleteSelectedCmakeTargetEntry(HWND owner)
-	{
-		if (g_app.targetListReadOnly)
-		{
-			if (!SelectedTargetListRows().empty())
-			{
-				DeletePhysicalBrowserEntries(owner);
-				return;
-			}
-			TargetTreeItem* item = SelectedTargetTreeItem();
-			if (!item || !IsPhysicalTreeFolder(item)) return;
-			if (item->kind == TargetTreeItemKind::PhysicalSourceFolder && item->sourceIndex != static_cast<size_t>(-1))
-			{
-				DeleteSourceConfigurationItems(owner, {static_cast<int>(item->sourceIndex)}, L"删除 CMake 源目录配置",
-					L"删除选中的 CMake 源目录配置？");
-			}
-			else if (FolderExists(item->physicalPath))
-			{
-				DeletePhysicalTargetsWithoutConfiguration(owner, {{item->physicalPath, true}});
-			}
-			return;
-		}
-		const int category = SelectedTargetCategory();
-		const std::vector<int> indices = SelectedTargetEntryIndices();
-		if (category == TargetSources)
-		{
-			if (!indices.empty())
-			{
-				const std::wstring prompt = L"删除选中的 " + std::to_wstring(indices.size()) +
-					L" 个 CMake 源文件/源目录配置项？";
-				DeleteSourceConfigurationItems(owner, indices, L"删除 CMake 配置项", prompt);
-				return;
-			}
-			if (TargetTreeItem* item = SelectedTargetTreeItem(); item && item->kind == TargetTreeItemKind::VirtualFolder)
-			{
-				DeleteVirtualFolder(owner, item->virtualFolder);
-			}
-			else if (TargetTreeItem* item = SelectedTargetTreeItem(); item && item->kind == TargetTreeItemKind::Source &&
-				item->sourceIndex != static_cast<size_t>(-1))
-			{
-				DeleteSourceConfigurationItems(owner, {static_cast<int>(item->sourceIndex)}, L"删除 CMake 源文件配置",
-					L"删除选中的 CMake 源文件配置？");
-			}
-			return;
-		}
-		if (indices.empty()) return;
-		std::vector<std::wstring>* values = category == TargetIncludes ? &g_app.cmakeTarget.includeDirectories :
-			(category == TargetDefinitions ? &g_app.cmakeTarget.compileDefinitions : &g_app.cmakeTarget.linkDirectories);
-		for (auto index = indices.rbegin(); index != indices.rend(); ++index)
-			values->erase(values->begin() + *index);
-		RefreshTargetList();
-	}
-
-	bool HasVirtualFolder(const std::wstring& value, const std::wstring& except = L"")
-	{
-		for (const std::wstring& folder : g_app.cmakeTarget.virtualFolders)
-			if (!SameVirtualFolder(folder, except) && SameVirtualFolder(folder, value)) return true;
-		for (const TargetSourceEntry& source : g_app.cmakeTarget.sources)
-			if (!SameVirtualFolder(source.virtualFolder, except) && SameVirtualFolder(source.virtualFolder, value)) return true;
-		return false;
-	}
-
-	bool WouldVirtualFolderRenameConflict(const std::wstring& oldFolder, const std::wstring& newFolder)
-	{
-		std::vector<std::wstring> folders;
-		auto addUnique = [&folders](const std::wstring& value) {
-			if (value.empty()) return;
-			for (const std::wstring& existing : folders)
-				if (SameVirtualFolder(existing, value)) return;
-			folders.push_back(NormalizeVirtualFolderPath(value));
-		};
-		for (const std::wstring& folder : g_app.cmakeTarget.virtualFolders) addUnique(folder);
-		for (const TargetSourceEntry& source : g_app.cmakeTarget.sources) addUnique(source.virtualFolder);
-		for (std::wstring& folder : folders)
-			if (IsVirtualFolderOrDescendant(folder, oldFolder))
-				folder = newFolder + folder.substr(oldFolder.size());
-		for (size_t i = 0; i < folders.size(); ++i)
-			for (size_t j = i + 1; j < folders.size(); ++j)
-				if (SameVirtualFolder(folders[i], folders[j])) return true;
-		return false;
-	}
-
-	bool CommitVirtualFolderEdit(HWND owner, const std::wstring& input)
-	{
-		const std::wstring name = NormalizeVirtualFolderPath(input);
-		if (!IsValidVirtualFolderPath(name))
-		{
-			MessageBoxW(owner, L"虚拟文件夹名称无效。可使用 / 创建下级分组，但不能包含 : * ? \" < > | ; $ 等字符。",
-				L"虚拟文件夹", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return false;
-		}
-		const std::wstring oldFolder = NormalizeVirtualFolderPath(g_app.renamingVirtualFolder);
-		const std::wstring parent = g_app.addingVirtualFolder ? NormalizeVirtualFolderPath(g_app.pendingVirtualFolderParent) : ParentVirtualFolder(oldFolder);
-		const std::wstring newFolder = parent.empty() ? name : parent + L"/" + name;
-		if (g_app.addingVirtualFolder)
-		{
-			if (HasVirtualFolder(newFolder))
-			{
-				MessageBoxW(owner, L"当前层级中已存在同名虚拟文件夹。", L"虚拟文件夹", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-				return false;
-			}
-			g_app.cmakeTarget.virtualFolders.push_back(newFolder);
-		}
-		else if (!SameVirtualFolder(oldFolder, newFolder))
-		{
-			if (WouldVirtualFolderRenameConflict(oldFolder, newFolder))
-			{
-				MessageBoxW(owner, L"目标位置已存在同名虚拟文件夹。", L"虚拟文件夹", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-				return false;
-			}
-			auto replacePrefix = [&oldFolder, &newFolder](std::wstring& value) {
-				if (!IsVirtualFolderOrDescendant(value, oldFolder)) return;
-				const std::wstring normalized = NormalizeVirtualFolderPath(value);
-				value = newFolder + normalized.substr(oldFolder.size());
-			};
-			for (std::wstring& folder : g_app.cmakeTarget.virtualFolders) replacePrefix(folder);
-			for (TargetSourceEntry& source : g_app.cmakeTarget.sources) replacePrefix(source.virtualFolder);
-		}
-		else return true;
-		g_app.selectedVirtualFolder = newFolder;
-		RefreshSourceConfigurationViews();
-		Status(L"虚拟文件夹已更新；点击“生成”后写入 project-config.json。");
-		return true;
-	}
-
-	void BeginAddVirtualFolder()
-	{
-		if (SelectedTargetCategory() != TargetSources || !g_app.targetTree || g_app.targetListReadOnly) return;
-		TargetTreeItem* item = SelectedTargetTreeItem();
-		HTREEITEM parent = TreeView_GetSelection(g_app.targetTree);
-		if (item && item->kind == TargetTreeItemKind::Source)
-			parent = TreeView_GetParent(g_app.targetTree, parent);
-		if (!parent) parent = TreeView_GetRoot(g_app.targetTree);
-		g_app.pendingVirtualFolderParent = item ? item->virtualFolder : L"";
-		g_app.renamingVirtualFolder.clear();
-		g_app.addingVirtualFolder = true;
-		const HTREEITEM created = InsertTargetTreeItem(parent, L"新建虚拟文件夹",
-			NewTargetTreeItem(TargetTreeItemKind::VirtualFolder, g_app.pendingVirtualFolderParent), true);
-		TreeView_Expand(g_app.targetTree, parent, TVE_EXPAND);
-		TreeView_SelectItem(g_app.targetTree, created);
-		TreeView_EditLabel(g_app.targetTree, created);
-	}
-
-	void BeginAddCmakeDefinition()
-	{
-		if (SelectedTargetCategory() != TargetDefinitions || !g_app.targetList)
-			return;
-		const int emptyRow = ListView_GetItemCount(g_app.targetList) - 1;
-		if (emptyRow < 0)
-			return;
-		ListView_SetItemState(g_app.targetList, emptyRow, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-		ListView_EnsureVisible(g_app.targetList, emptyRow, FALSE);
-		SetFocus(g_app.targetList);
-		ListView_EditLabel(g_app.targetList, emptyRow);
-	}
-
-	void MoveSelectedCmakeTargetEntry(int offset)
-	{
-		if (!g_app.targetList || g_app.targetListReadOnly || offset == 0)
-			return;
-		const int category = SelectedTargetCategory();
-		std::vector<int> selectedRows = SelectedTargetListRows();
-		if (selectedRows.empty()) return;
-		if (category == TargetSources)
-		{
-			const size_t count = g_app.targetSourceRows.size();
-			if ((offset < 0 && selectedRows.front() == 0) ||
-				(offset > 0 && static_cast<size_t>(selectedRows.back() + 1) >= count)) return;
-			if (offset < 0)
-			{
-				for (int row : selectedRows)
-					std::swap(g_app.cmakeTarget.sources[g_app.targetSourceRows[static_cast<size_t>(row)]],
-						g_app.cmakeTarget.sources[g_app.targetSourceRows[static_cast<size_t>(row - 1)]]);
-			}
-			else
-			{
-				for (size_t i = selectedRows.size(); i-- > 0;)
-				{
-					const int row = selectedRows[i];
-					std::swap(g_app.cmakeTarget.sources[g_app.targetSourceRows[static_cast<size_t>(row)]],
-						g_app.cmakeTarget.sources[g_app.targetSourceRows[static_cast<size_t>(row + 1)]]);
-				}
-			}
-			for (int& row : selectedRows) row += offset;
-			RefreshSourceConfigurationViews();
-			for (int row : selectedRows)
-				ListView_SetItemState(g_app.targetList, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-			ListView_EnsureVisible(g_app.targetList, offset < 0 ? selectedRows.front() : selectedRows.back(), FALSE);
-			UpdateTargetActionButtons();
-			return;
-		}
-
-		std::vector<int> selected = SelectedTargetEntryIndices();
-		const size_t count = TargetEntryCount(category);
-		if ((offset < 0 && selected.front() == 0) ||
-			(offset > 0 && static_cast<size_t>(selected.back() + 1) >= count))
-			return;
-
-		auto swapEntries = [category](int left, int right) {
-			if (category == TargetSources)
-				std::swap(g_app.cmakeTarget.sources[static_cast<size_t>(left)], g_app.cmakeTarget.sources[static_cast<size_t>(right)]);
-			else if (category == TargetIncludes)
-				std::swap(g_app.cmakeTarget.includeDirectories[static_cast<size_t>(left)], g_app.cmakeTarget.includeDirectories[static_cast<size_t>(right)]);
-			else if (category == TargetDefinitions)
-				std::swap(g_app.cmakeTarget.compileDefinitions[static_cast<size_t>(left)], g_app.cmakeTarget.compileDefinitions[static_cast<size_t>(right)]);
-			else
-				std::swap(g_app.cmakeTarget.linkDirectories[static_cast<size_t>(left)], g_app.cmakeTarget.linkDirectories[static_cast<size_t>(right)]);
-		};
-
-		if (offset < 0)
-		{
-			for (int index : selected)
-				swapEntries(index, index - 1);
-		}
-		else
-		{
-			for (size_t i = selected.size(); i-- > 0;)
-				swapEntries(selected[i], selected[i] + 1);
-		}
-		for (int& index : selected) index += offset;
-		RefreshTargetList();
-		for (int index : selected)
-			ListView_SetItemState(g_app.targetList, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-		ListView_EnsureVisible(g_app.targetList, offset < 0 ? selected.front() : selected.back(), FALSE);
-		UpdateTargetActionButtons();
-	}
-
-	bool SaveCmakeTargetConfig(HWND owner)
-	{
-		std::wstring error;
-		const BackupChoice backup = ConfirmGenerateBackups(owner, CmakeTargetConfigurationFiles());
-		if (backup == BackupChoice::Cancel) {
-			Status(L"已取消生成 CMake 目标配置。");
-			return false;
-		}
-		const bool createBackup = backup == BackupChoice::Create;
-		if (!WriteCMakeTargetConfig(g_app.workspace, g_app.cmakeTarget, error, createBackup)) {
-			MessageBoxW(owner, error.c_str(), L"保存 CMake 目标配置失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
-			return false;
-		}
-		Status(L"CMake 目标配置已保存，请在 CMake Tools 执行 Configure。");
-		return true;
-	}
-
-	std::wstring SelectOpenOcdConfig(HWND owner, const std::wstring &openocdPath, const wchar_t *folder, const wchar_t *title)
-	{
-		std::wstring scripts;
-		if (!DetectOpenOcdScripts(openocdPath, scripts))
-		{
-			MessageBoxW(owner, L"无法从当前 openocd.exe 的安装目录找到 scripts 文件夹。\r\n请先选择有效的 OpenOCD 程序。",
-				L"无法选择 OpenOCD 配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return {};
-		}
-		std::wstring configFolder = JoinPath(scripts, folder);
-		if (!FolderExists(configFolder))
-		{
-			MessageBoxW(owner, (L"未找到 OpenOCD 配置目录：\r\n" + configFolder).c_str(),
-				L"无法选择 OpenOCD 配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return {};
-		}
-		wchar_t path[4096]{};
-		const wchar_t filter[] = L"OpenOCD 配置文件 (*.cfg)\0*.cfg\0所有文件\0*.*\0\0";
-		OPENFILENAMEW ofn{};
-		ofn.lStructSize = sizeof(ofn);
-		ofn.hwndOwner = owner;
-		ofn.lpstrFile = path;
-		ofn.nMaxFile = static_cast<DWORD>(ARRAY_SIZE(path));
-		ofn.lpstrInitialDir = configFolder.c_str();
-		ofn.lpstrFilter = filter;
-		ofn.lpstrTitle = title;
-		ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-		if (GetOpenFileNameW(&ofn) != TRUE)
-		{
-			QueueDarkMenuSeparatorRepaint(owner);
-			return {};
-		}
-		QueueDarkMenuSeparatorRepaint(owner);
-		return NormalizePath(path);
-	}
-
-	void TryCubeClt(HWND owner, int index)
-	{
-		if (index > 2)
-			return;
-		PullControls();
-		ToolPaths detected = g_app.tools;
-		std::wstring root, report;
-		if (!DetectCubeClt(GetEdit(g_app.edits[index]), detected, root, report))
-			return;
-		std::wstring svd = FindSvdForChip(root, g_app.chipType);
-		if (!svd.empty())
-			report += L"SVD = " + svd + L"\r\n";
-		std::wstring message = L"检测到 STM32CubeCLT 工具包：\r\n" + root + L"\r\n\r\n" + report + L"\r\n是否自动填充检测到的地址？";
-		if (MessageBoxW(owner, message.c_str(), L"检测 STM32CubeCLT", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES)
-		{
-			g_app.tools = detected;
-			if (!svd.empty())
-				g_app.svd = svd;
-			PushControls();
-			Status(L"已从 STM32CubeCLT 自动填充工具链地址。");
-		}
-	}
-
-	void Browse(HWND owner, int index)
-	{
-		if (!HasBrowse[index])
-			return;
-		if (index == 5 || index == 6)
-		{
-			PullControls();
-			const bool isInterfaceConfig = index == 5;
-			std::wstring selected = SelectOpenOcdConfig(owner, g_app.tools.openocd, isInterfaceConfig ? L"interface" : L"target",
-				isInterfaceConfig ? L"选择 OpenOCD interface 配置" : L"选择 OpenOCD target 配置");
-			if (selected.empty()) return;
-			std::wstring value = FileName(selected);
-			if (isInterfaceConfig)
-			{
-				if (value.size() > 4 && _wcsicmp(value.c_str() + value.size() - 4, L".cfg") == 0)
-					value.resize(value.size() - 4);
-				g_app.tools.openocdInterface = value;
-				PopulateOpenOcdInterfaceCombo();
-			}
-			else
-				SetEdit(g_app.edits[index], value);
-			return;
-		}
-		std::wstring selected = SelectFile(owner, FileNames[index]);
-		if (selected.empty())
-			return;
-		SetEdit(g_app.edits[index], selected);
-		if (index == 4 && GetEdit(g_app.edits[6]).empty())
-		{
-			std::wstring target = FindOpenOcdTargetForChip(selected, g_app.chipType);
-			if (!target.empty())
-			{
-				SetEdit(g_app.edits[6], target);
-				Status(L"已根据芯片型号从 OpenOCD target 配置中选择默认文件。");
-			}
-		}
-		if (index == 4)
-			UpdateOpenOcdConfigControls();
-		if (index <= 2)
-		{
-			TryCubeClt(owner, index);
-		}
-	}
-
-	bool Save(HWND owner, bool fromExample)
-	{
-		PullControls();
-		g_app.tools.cmake = NormalizePath(g_app.tools.cmake);
-		g_app.tools.ninja = NormalizePath(g_app.tools.ninja);
-		g_app.tools.starmClang = NormalizePath(g_app.tools.starmClang);
-		g_app.tools.gdb = NormalizePath(g_app.tools.gdb);
-		g_app.tools.openocd = NormalizePath(g_app.tools.openocd);
-		g_app.tools.openocdInterface = Trim(g_app.tools.openocdInterface);
-		g_app.tools.openocdTarget = Trim(g_app.tools.openocdTarget);
-		g_app.svd = NormalizePath(g_app.svd);
-		g_app.tools.svd = g_app.svd;
-		PushControls();
-		ValidationResult validation = ValidateTools(g_app.tools, false);
-		if (!validation.ok)
-		{
-			MessageBoxW(owner, (L"以下路径无效：\r\n" + validation.message).c_str(), L"配置检查失败", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return false;
-		}
-		if (!g_app.svd.empty() && !FileExists(g_app.svd))
-		{
-			MessageBoxW(owner, L"SVD 路径不为空但文件不存在，请重新选择。", L"配置检查失败", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-			return false;
-		}
-		const bool updateUserDefaults = ShouldUpdateUserDefaults(owner);
-		std::vector<std::wstring> backupCandidates = ToolchainConfigurationFiles();
-		if (updateUserDefaults)
-			backupCandidates.push_back(GetUserDefaultSettingsPath());
-		const BackupChoice backup = ConfirmGenerateBackups(owner, backupCandidates);
-		if (backup == BackupChoice::Cancel)
-		{
-			Status(L"已取消工具链配置写入。");
-			return false;
-		}
-		const bool createBackup = backup == BackupChoice::Create;
-
-		std::wstring error;
-		if (!WriteConfiguration(g_app.workspace, g_app.tools, g_app.projectName, g_app.chipType, g_app.svd, fromExample, error, createBackup))
-		{
-			MessageBoxW(owner, error.c_str(), L"写入配置失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
-			return false;
-		}
-		if (updateUserDefaults && !WriteUserDefaultSettings(SharedTools(g_app.tools), error, createBackup))
-		{
-			MessageBoxW(owner, error.c_str(), L"更新默认配置失败", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-		}
-		if (g_app.workspace.hasExample)
-			Status(fromExample ? L"工具链配置已重建。" : L"工具链配置已修改。");
-		else
-			Status(L"工具链配置已生成。");
-		return true;
-	}
 
 	LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
@@ -3533,8 +1575,8 @@ namespace
 		case WM_CREATE:
 		{
 			g_app.window = hwnd;
-			// 将非客户区标题栏一并切换到深色，避免菜单深色而标题栏仍为白色。
-			BOOL darkFrame = TRUE;
+			// 非客户区标题栏跟随当前主题，避免客户区与系统标题栏颜色割裂。
+			BOOL darkFrame = IsDarkTheme() ? TRUE : FALSE;
 			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkFrame, sizeof(darkFrame));
 			// 传统 ClearType 优先对齐小字号笔画到像素网格，适合 Win32/GDI 的表格与工具界面。
 			g_app.font = CreateFontW(-Ui(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -3557,6 +1599,8 @@ namespace
 			AppendDarkMenuItem(g_app.configMenu, 0, ID_CONFIG_CHECK_CLT, L"从注册表检查 CLT 包");
 			AppendDarkMenuItem(g_app.menu, MF_POPUP, reinterpret_cast<UINT_PTR>(g_app.configMenu), L"配置");
 			g_app.otherMenu = CreatePopupMenu();
+			AppendDarkMenuItem(g_app.otherMenu, 0, ID_OTHER_TOGGLE_THEME, ThemeToggleMenuText());
+			AppendDarkMenuSeparator(g_app.otherMenu);
 			AppendDarkMenuItem(g_app.otherMenu, 0, ID_OTHER_ABOUT, L"关于");
 			AppendDarkMenuItem(g_app.menu, MF_POPUP, reinterpret_cast<UINT_PTR>(g_app.otherMenu), L"其它");
 			ApplyDarkMenu(g_app.configMenu);
@@ -3580,7 +1624,7 @@ namespace
 			TabCtrl_InsertItem(g_app.pageTab, 0, &toolTab);
 			TCITEMW targetTab{};
 			targetTab.mask = TCIF_TEXT;
-			targetTab.pszText = const_cast<wchar_t*>(L"CMake 目标配置");
+			targetTab.pszText = const_cast<wchar_t*>(L"CMake 构建目标配置");
 			TabCtrl_InsertItem(g_app.pageTab, 1, &targetTab);
 			if (g_app.openCmakeTargetOnStartup)
 				TabCtrl_SetCurSel(g_app.pageTab, 1);
@@ -3596,7 +1640,7 @@ namespace
 			for (int i = 0; i < 4; ++i)
 			{
 				HWND label = CreateWindowW(L"STATIC", Labels[i], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
-				g_app.edits[i] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(i).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+				g_app.edits[i] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", toolchain::InitialValue(g_app, i).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 					Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_CMAKE + i), nullptr, nullptr);
 				HWND browse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 					Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + i), nullptr, nullptr);
@@ -3605,7 +1649,7 @@ namespace
 				y += Ui(39);
 			}
 			HWND svdLabel = CreateWindowW(L"STATIC", Labels[7], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
-			g_app.edits[7] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(7).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+			g_app.edits[7] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", toolchain::InitialValue(g_app, 7).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 				Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_SVD), nullptr, nullptr);
 			HWND svdBrowse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 7), nullptr, nullptr);
@@ -3613,7 +1657,7 @@ namespace
 			AddToolPageControl(svdLabel); AddToolPageControl(g_app.edits[7]); AddToolPageControl(svdBrowse);
 			y += Ui(39);
 			HWND ocdLabel = CreateWindowW(L"STATIC", Labels[4], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
-			g_app.edits[4] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(4).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+			g_app.edits[4] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", toolchain::InitialValue(g_app, 4).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 				Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD), nullptr, nullptr);
 			HWND ocdBrowse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 4), nullptr, nullptr);
@@ -3626,7 +1670,7 @@ namespace
 			g_app.openocdConfigBrowse[0] = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 				Ui(350), y, Ui(98), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 5), nullptr, nullptr);
 			HWND targetLabel = CreateWindowW(L"STATIC", Labels[6], WS_CHILD | WS_VISIBLE, Ui(465), y + Ui(5), Ui(112), Ui(22), hwnd, nullptr, nullptr, nullptr);
-			g_app.edits[6] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(6).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+			g_app.edits[6] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", toolchain::InitialValue(g_app, 6).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 				Ui(588), y, Ui(197), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD_TARGET), nullptr, nullptr);
 			g_app.openocdConfigBrowse[1] = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 6), nullptr, nullptr);
@@ -3646,9 +1690,9 @@ namespace
 			HWND categoryLabel = CreateWindowW(L"STATIC", L"配置类别", WS_CHILD | WS_VISIBLE, Ui(14), Ui(112), Ui(96), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.targetCategory = CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
 				Ui(120), Ui(107), Ui(265), Ui(160), hwnd, reinterpret_cast<HMENU>(ID_TARGET_CATEGORY), nullptr, nullptr);
-			const wchar_t* categories[] = {L"目标文件 / 文件夹", L"头文件目录", L"编译宏", L"链接目录"};
+			const wchar_t* categories[] = {L"源文件 / 源目录", L"头文件目录", L"编译宏", L"链接目录"};
 			for (const wchar_t* category : categories) SendMessageW(g_app.targetCategory, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(category));
-			SendMessageW(g_app.targetCategory, CB_SETCURSEL, TargetSources, 0);
+			SendMessageW(g_app.targetCategory, CB_SETCURSEL, targetconfig::Sources, 0);
 			g_app.targetTree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, nullptr,
 				WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_EDITLABELS,
 				Ui(14), Ui(149), Ui(280), Ui(271), hwnd, reinterpret_cast<HMENU>(ID_TARGET_TREE), nullptr, nullptr);
@@ -3658,7 +1702,7 @@ namespace
 				Ui(306), Ui(149), Ui(589), Ui(271), hwnd, nullptr, nullptr, nullptr);
 			LVCOLUMNW valueColumn{};
 			valueColumn.mask = LVCF_TEXT | LVCF_WIDTH;
-			valueColumn.pszText = const_cast<wchar_t*>(L"当前分组中的目标项");
+			valueColumn.pszText = const_cast<wchar_t*>(L"当前分组中的源文件 / 源目录");
 			valueColumn.cx = Ui(585);
 			ListView_InsertColumn(g_app.targetList, 0, &valueColumn);
 			ListView_SetBkColor(g_app.targetList, kThemeWindow);
@@ -3666,8 +1710,8 @@ namespace
 			ListView_SetTextColor(g_app.targetList, kThemeText);
 			ListView_SetExtendedListViewStyle(g_app.targetList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 			HWND targetHeader = ListView_GetHeader(g_app.targetList);
-			EnableNativeDarkModeForWindow(targetHeader);
-			SetWindowTheme(targetHeader, L"DarkMode_Explorer", nullptr);
+			SetNativeDarkModeForWindow(targetHeader, IsDarkTheme());
+			SetWindowTheme(targetHeader, IsDarkTheme() ? L"DarkMode_Explorer" : L"Explorer", nullptr);
 			SetWindowSubclass(targetHeader, DarkHeaderSubclass, 1, 0);
 			g_app.targetAddVirtualFolder = CreateWindowW(L"BUTTON", L"新建虚拟文件夹", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 				Ui(358), Ui(107), Ui(36), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_TARGET_ADD_VIRTUAL_FOLDER), nullptr, nullptr);
@@ -3694,14 +1738,14 @@ namespace
 			AddToolTip(g_app.targetDelete, L"删除选中的列表项或工程树项；可选择同步移到回收站");
 			AddToolTip(g_app.targetMoveUp, L"将选中的配置项上移");
 			AddToolTip(g_app.targetMoveDown, L"将选中的配置项下移");
-			AddToolTip(g_app.targetSave, L"生成 CMake 目标配置并写入工程文件");
+			AddToolTip(g_app.targetSave, L"生成 CMake 构建目标配置并写入工程文件");
 			AddTargetPageControl(categoryLabel); AddTargetPageControl(g_app.targetCategory); AddTargetPageControl(g_app.targetTree); AddTargetPageControl(g_app.targetList);
 			AddTargetPageControl(g_app.targetAddVirtualFolder);
 			AddTargetPageControl(g_app.targetAddFile); AddTargetPageControl(g_app.targetAddFolder); AddTargetPageControl(g_app.targetDelete);
 			AddTargetPageControl(g_app.targetMoveUp); AddTargetPageControl(g_app.targetMoveDown); AddTargetPageControl(g_app.targetSave);
 
-			PushControls();
-			UpdateOpenOcdConfigControls();
+			toolchain::PushControls(g_app);
+			toolchain::UpdateOpenOcdConfigControls(g_app);
 			SwitchPage();
 
 			// 顶层菜单使用客户区自绘按钮，避免原生菜单在文件对话框关闭后重绘白色底边。
@@ -3740,61 +1784,61 @@ namespace
 			}
 			if (id == ID_TARGET_ADD_VIRTUAL_FOLDER)
 			{
-				BeginAddVirtualFolder();
+				targetconfig::BeginAddVirtualFolder();
 				return 0;
 			}
 			if (id == ID_TARGET_ADD_FILE)
 			{
-				BeginCmakePathDialog(hwnd, false);
+				targetconfig::BeginPathDialog(hwnd, false);
 				return 0;
 			}
 			if (id == ID_TARGET_ADD_FOLDER)
 			{
-				if (SelectedTargetCategory() == TargetDefinitions)
-					BeginAddCmakeDefinition();
+				if (targetconfig::SelectedCategory() == targetconfig::CompileDefinitions)
+					targetconfig::BeginAddDefinition();
 				else
-					BeginCmakePathDialog(hwnd, true);
+					targetconfig::BeginPathDialog(hwnd, true);
 				return 0;
 			}
 			if (id == ID_TARGET_DELETE)
 			{
-				DeleteSelectedCmakeTargetEntry(hwnd);
+				targetconfig::DeleteSelectedEntry(hwnd);
 				return 0;
 			}
 			if (id == ID_TARGET_MOVE_UP)
 			{
-				MoveSelectedCmakeTargetEntry(-1);
+				targetconfig::MoveSelectedEntry(-1);
 				return 0;
 			}
 			if (id == ID_TARGET_MOVE_DOWN)
 			{
-				MoveSelectedCmakeTargetEntry(1);
+				targetconfig::MoveSelectedEntry(1);
 				return 0;
 			}
 			if (id == ID_TARGET_SAVE)
 			{
-				SaveCmakeTargetConfig(hwnd);
+				targetconfig::Save(hwnd);
 				return 0;
 			}
 			if (id == ID_OPENOCD && HIWORD(wParam) == EN_CHANGE)
 			{
-				UpdateOpenOcdConfigControls();
+				toolchain::UpdateOpenOcdConfigControls(g_app);
 				return 0;
 			}
 			if (id >= ID_BROWSE_BASE && id < ID_BROWSE_BASE + 8)
 			{
-				Browse(hwnd, id - ID_BROWSE_BASE);
+				toolchain::Browse(g_app, hwnd, id - ID_BROWSE_BASE);
 				return 0;
 			}
 			if (id == ID_SAVE_EXAMPLE)
 			{
-				Save(hwnd, true);
+				toolchain::SaveConfiguration(g_app, hwnd, true);
 				return 0;
 			}
 			if (id == ID_SAVE_SETTINGS)
 			{
 				if (g_app.workspace.hasExample)
-					Save(hwnd, false);
+					toolchain::SaveConfiguration(g_app, hwnd, false);
 				else
 					DestroyWindow(hwnd);
 				return 0;
@@ -3804,6 +1848,11 @@ namespace
 				ShowAboutWindow(hwnd);
 				return 0;
 			}
+			if (id == ID_OTHER_TOGGLE_THEME)
+			{
+				ToggleTheme(hwnd);
+				return 0;
+			}
 			if (id == ID_CLEAR)
 			{
 				ClearCurrentConfiguration(hwnd);
@@ -3811,21 +1860,21 @@ namespace
 			}
 			if (id == ID_CONFIG_SAVE_DEFAULT)
 			{
-				SaveUserDefaultsFromMenu(hwnd);
+				toolchain::SaveUserDefaults(g_app, hwnd);
 				return 0;
 			}
 			if (id == ID_CONFIG_LOAD_DEFAULT)
 			{
-				ReadUserDefaultsFromMenu(hwnd);
+				toolchain::ReadUserDefaults(g_app, hwnd);
 				return 0;
 			}
 			if (id == ID_CONFIG_CHECK_CLT)
 			{
-				PullControls();
+				toolchain::PullControls(g_app);
 				SanitizeToolPaths(g_app.tools);
 				g_app.svd = g_app.tools.svd;
-				PushControls();
-				OfferRegistryClt(hwnd, true);
+				toolchain::PushControls(g_app);
+				toolchain::OfferRegistryTools(g_app, hwnd, true);
 				return 0;
 			}
 			break;
@@ -3892,27 +1941,27 @@ namespace
 			{
 				const NMTREEVIEWW* change = reinterpret_cast<const NMTREEVIEWW*>(lParam);
 				const TargetTreeItem* item = change ? reinterpret_cast<const TargetTreeItem*>(change->itemNew.lParam) : nullptr;
-				g_app.selectedVirtualFolder = item ? NormalizeVirtualFolderPath(item->virtualFolder) : L"";
-				RefreshTargetList();
+				g_app.selectedVirtualFolder = item ? item->virtualFolder : L"";
+				targetconfig::RefreshList();
 				return 0;
 			}
 			if (notification && notification->hwndFrom == g_app.targetTree && notification->code == NM_CLICK)
 			{
 				// 再次点击已选中的树节点只会切换焦点，不会触发 TVN_SELCHANGED；仍需清除右侧的旧选中状态。
-				RefreshTargetList();
+				targetconfig::RefreshList();
 				return 0;
 			}
 			if (notification && notification->hwndFrom == g_app.targetTree && notification->code == TVN_ITEMEXPANDINGW)
 			{
 				const NMTREEVIEWW* change = reinterpret_cast<const NMTREEVIEWW*>(lParam);
 				TargetTreeItem* item = change ? reinterpret_cast<TargetTreeItem*>(change->itemNew.lParam) : nullptr;
-				if (change && (change->action & TVE_EXPAND) && IsPhysicalTreeFolder(item))
-					LoadPhysicalFolderChildren(change->itemNew.hItem, item);
+				if (change && (change->action & TVE_EXPAND) && targetconfig::IsPhysicalTreeFolder(item))
+					targetconfig::LoadPhysicalFolderChildren(change->itemNew.hItem, item);
 				return 0;
 			}
 			if (notification && notification->hwndFrom == g_app.targetTree && notification->code == TVN_BEGINLABELEDITW)
 			{
-				TargetTreeItem* item = SelectedTargetTreeItem();
+				TargetTreeItem* item = targetconfig::SelectedTreeItem();
 				if (!item || item->kind != TargetTreeItemKind::VirtualFolder)
 					return TRUE;
 				if (!g_app.addingVirtualFolder)
@@ -3924,8 +1973,8 @@ namespace
 			if (notification && notification->hwndFrom == g_app.targetTree && notification->code == TVN_ENDLABELEDITW)
 			{
 				const NMTVDISPINFOW* edit = reinterpret_cast<const NMTVDISPINFOW*>(lParam);
-				const bool committed = edit && edit->item.pszText && CommitVirtualFolderEdit(hwnd, edit->item.pszText);
-				if (!committed) RefreshSourceConfigurationViews();
+				const bool committed = edit && edit->item.pszText && targetconfig::CommitVirtualFolderEdit(hwnd, edit->item.pszText);
+				if (!committed) targetconfig::RefreshSourceViews();
 				g_app.addingVirtualFolder = false;
 				g_app.pendingVirtualFolderParent.clear();
 				g_app.renamingVirtualFolder.clear();
@@ -3934,7 +1983,7 @@ namespace
 			}
 			if (notification && notification->hwndFrom == g_app.targetTree && notification->code == NM_DBLCLK)
 			{
-				TargetTreeItem* item = SelectedTargetTreeItem();
+				TargetTreeItem* item = targetconfig::SelectedTreeItem();
 				if (item && item->kind == TargetTreeItemKind::VirtualFolder && !item->virtualFolder.empty())
 					TreeView_EditLabel(g_app.targetTree, TreeView_GetSelection(g_app.targetTree));
 				return 0;
@@ -3954,13 +2003,13 @@ namespace
 			}
 			if (notification && notification->hwndFrom == g_app.targetList && notification->code == LVN_ITEMCHANGED)
 			{
-				UpdateTargetActionButtons();
+				targetconfig::UpdateActionButtons();
 				return 0;
 			}
 			if (notification && notification->hwndFrom == g_app.targetList && notification->code == LVN_ENDLABELEDITW)
 			{
 				const NMLVDISPINFOW* edit = reinterpret_cast<const NMLVDISPINFOW*>(lParam);
-				if (!g_app.targetListReadOnly && edit->item.pszText) CommitTargetListEdit(hwnd, edit->item.iItem, edit->item.pszText);
+				if (!g_app.targetListReadOnly && edit->item.pszText) targetconfig::CommitListEdit(hwnd, edit->item.iItem, edit->item.pszText);
 				return 0;
 			}
 			break;
@@ -3983,7 +2032,7 @@ namespace
 			// 使用主题背景而不是透明刷，避免 WS_CLIPCHILDREN 下隐藏页签标签留下残影。
 			SetBkMode(dc, OPAQUE);
 			SetBkColor(dc, kThemeWindow);
-			SetTextColor(dc, reinterpret_cast<HWND>(lParam) == g_app.updateLink ? RGB(255, 106, 106) : kThemeText);
+			SetTextColor(dc, reinterpret_cast<HWND>(lParam) == g_app.updateLink ? kThemeUpdateLink : kThemeText);
 			return reinterpret_cast<LRESULT>(g_app.windowBrush ? g_app.windowBrush : GetSysColorBrush(COLOR_WINDOW));
 		}
 		case WM_CTLCOLOREDIT:
@@ -4029,24 +2078,19 @@ namespace
 				return 0;
 			}
 			break;
-		case WM_APP_CMAKE_DIALOG_RESULT:
+		case dialogs::kCmakePathDialogResultMessage:
 		{
-			CMakeDialogResult* result = reinterpret_cast<CMakeDialogResult*>(lParam);
+			dialogs::CmakePathDialogResult* result = reinterpret_cast<dialogs::CmakePathDialogResult*>(lParam);
 			g_app.cmakeDialogOpen = false;
 			QueueDarkMenuSeparatorRepaint(hwnd);
 			if (result)
 			{
-				int added = 0;
-				for (const std::wstring& path : result->paths)
-					if (AddCmakePathValue(hwnd, path, result->isFolder))
-						++added;
-				if (!result->isFolder && added > 1)
-					Status(L"已加入 " + std::to_wstring(added) + L" 个源文件；点击“生成”后写入工程文件。");
+				targetconfig::AddDialogPaths(hwnd, result->paths, result->isFolder);
 			}
 			delete result;
 			return 0;
 		}
-		case WM_APP_CMAKE_DIALOG_CLEANUP_COMPLETE:
+		case dialogs::kCmakePathDialogCleanupMessage:
 			if (g_app.cmakeDialogWorkers != 0)
 				--g_app.cmakeDialogWorkers;
 			return 0;
@@ -4089,7 +2133,7 @@ namespace
 		g_app.chipType = g_app.workspace.chipType;
 		if (!LoadCMakeTargetConfig(g_app.workspace, g_app.cmakeTarget, error))
 		{
-			MessageBoxW(nullptr, error.c_str(), L"CMake 目标配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+			MessageBoxW(nullptr, error.c_str(), L"CMake 构建目标配置", MB_OK | MB_ICONWARNING | MB_TOPMOST);
 			g_app.cmakeTarget = {};
 		}
 		std::string doc;
@@ -4100,12 +2144,12 @@ namespace
 		// 工程 settings.json 的每个路径在使用前均做存在性与 OpenOCD cfg 合法性检查。
 		SanitizeToolPaths(g_app.tools);
 		g_app.svd = g_app.tools.svd;
-		ApplyOpenOcdDefaults();
+		toolchain::ApplyOpenOcdDefaults(g_app);
 		// 仅当工程配置缺失或有无效工具路径时，才按默认配置、注册表的顺序补齐。
-		OfferUserDefaultsOnStartup(nullptr, hasLocalSettings);
+		toolchain::OfferUserDefaultsOnStartup(g_app, nullptr, hasLocalSettings);
 		// VS Code/CMake Tools 也可能预先创建仅含编辑器设置的 settings.json。
 		// 只要当前没有有效 SVD，就从已填入的 CubeCLT 工具反查包根目录并匹配芯片。
-		if (TryAutoFillSvdFromCurrentCubeClt())
+		if (toolchain::TryAutoFillSvd(g_app))
 			Status(L"已从 STM32CubeCLT 自动匹配当前芯片的 SVD 文件。");
 		g_app.tools.svd = g_app.svd;
 		// LoadWorkspace 仅成功于已生成代码的 CubeMX CMake 工程；在此基础上复用
@@ -4148,7 +2192,7 @@ namespace
 		UpdateWindow(hwnd);
 		StartUpdateCheck(hwnd);
 		// 窗口显示后再次同步，确保原生 Edit 控件已经完成创建。
-		PushControls();
+		toolchain::PushControls(g_app);
 		MSG msg{};
 		while (GetMessageW(&msg, nullptr, 0, 0) > 0)
 		{
@@ -4188,12 +2232,14 @@ int wmain()
 {
 	// 必须在创建任何窗口前声明 DPI 感知，否则 Windows 会把整个客户区作为位图缩放。
 	EnableSystemDpiAwareness();
+	// 主题独立于工程配置，始终从当前用户目录读取；缺失时保持浅色默认值。
+	LoadThemePreference();
 	// 从资源管理器直接启动时不显示短暂的控制台窗口；ConPTY 环境下不会影响 VS Code 终端。
 	if (HWND console = GetConsoleWindow())
 		ShowWindow(console, SW_HIDE);
 
 	INITCOMMONCONTROLSEX commonControls{};
-	EnableNativeDarkControls();
+	SetNativeAppTheme(IsDarkTheme());
 	commonControls.dwSize = sizeof(commonControls);
 	commonControls.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES;
 	InitCommonControlsEx(&commonControls);
@@ -4241,7 +2287,7 @@ int wmain()
 				root = argv[++i];
 		}
 	}
-	int result = updateCacheCheck ? RunUpdateCacheCheck() : (validate ? RunValidate(root) : RunGui(root));
+	int result = updateCacheCheck ? update::RefreshCache() : (validate ? RunValidate(root) : RunGui(root));
 	if (argv)
 		LocalFree(argv);
 	OleUninitialize();

@@ -5,6 +5,9 @@
 CMakeUserPresets.json
 PROGRAM_DESIGN.md
 
+# The release archive contains the template copy of the executable.
+/templates/.vscode/PathConfigurator.exe
+
 # IDE state files.
 /.vs/
 *.user

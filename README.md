@@ -1,58 +1,144 @@
 # STM32 PathConfigurator
 
-`STM32 PathConfigurator` 是一个 Windows 原生图形配置工具。它让刚接触 STM32 的使用者可以用 STM32CubeMX 生成代码，再直接在 VS Code 中完成 **编译、烧录和单步调试**；无需设置系统环境变量，也不依赖 STM32 for VSCode 插件。
+`STM32 PathConfigurator` 是一个 Windows 图形工具，用于将 STM32CubeMX 生成的 **CMake 工程**接入 VS Code。完成一次本机配置后，可以直接在 VS Code 中：
 
-它不会安装或修改任何工具，而是把已安装工具的本机路径写入工程的本地配置文件。
+- 编译 Debug 或 Release 固件
+- 通过 OpenOCD 烧录开发板
+- 使用 Cortex-Debug 设置断点、单步执行和查看外设寄存器
 
-## 从零快速开始
+它不要求设置系统环境变量，也不依赖 STM32 for VSCode 插件。工具安装在每个人电脑上的位置只保存在本机文件中，因此适合新手入门，也适合多人共用同一 STM32 工程。
 
-下面的步骤适用于第一次使用 VS Code 开发 STM32 的使用者。完成一次后，后续工程只需复制模板并运行配置器。
+> 本文是使用手册，不介绍程序源代码的组织方式或内部实现。
 
-### 1. 准备软件和调试器
+## 1. 快速入手
 
-| 软件或硬件 | 是否需要 | 作用与下载地址 |
-| --- | --- | --- |
-| STM32CubeMX | 需要 | 创建 `.ioc` 并生成 CMake 工程：[STM32CubeMX 官方页](https://www.st.com/en/development-tools/stm32cubemx.html) |
-| STM32CubeCLT | 需要 | 提供 CMake、Ninja、`starm-clang` 和 ARM GDB：[STM32CubeCLT 官方页](https://www.st.com/en/development-tools/stm32cubeclt.html) |
-| OpenOCD | 需要 | 与 CMSIS-DAP、ST-LINK 等调试器通信；推荐 Windows 预编译包：[xPack OpenOCD 下载页](https://xpack.github.io/dev-tools/openocd/) |
-| Visual Studio Code | 需要 | 编辑、任务执行和调试界面：[VS Code 下载页](https://code.visualstudio.com/Download) |
-| C/C++ 扩展 | 建议 | 头文件跳转、代码补全与错误提示：[C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) |
-| Cortex-Debug 扩展 | 调试需要 | 在 VS Code 中通过 OpenOCD 调试 STM32：[Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) |
-| CMake Tools 扩展 | 建议 | 提供 CMake 预设、配置和构建的状态栏入口：[CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) |
-| vscode-tasks 扩展 | 可选 | 为 `tasks.json` 中的任务提供快捷运行入口：[actboy168/vscode-tasks](https://github.com/actboy168/vscode-tasks) |
-| CMSIS-DAP、ST-LINK 或其他 OpenOCD 支持的调试器 | 烧录/调试需要 | 将调试器以 SWD 连接到目标板；CMSIS-DAP 是模板的默认选择。 |
+本章面向第一次接触 STM32、VS Code 和 CMake 的使用者。只需按顺序完成即可，不必先理解这些名词。
 
-`tasks.json` 由 VS Code 内置支持，**不安装 vscode-tasks 也能运行任务**。安装它只是为了更方便地点击任务。STM32CubeCLT 已包含本流程所需的 CMake、Ninja、编译器和 GDB，一般不需要另行安装这些工具。
+### 1.1 安装软件并记录位置
 
-### 2. 用 CubeMX 生成 CMake 工程
+先安装下表中的软件。安装完成后，记住或在资源管理器中找到表中列出的 `.exe` 文件；稍后配置器会让你逐一选择它们。
 
-在 STM32CubeMX 中新建或打开工程，然后进入 **Project Manager**：
+| 软件 | 是否需要 | 下载地址 | 安装后需要找到的内容 |
+| --- | --- | --- | --- |
+| STM32CubeMX | 必需 | [官方页面](https://www.st.com/en/development-tools/stm32cubemx.html) | `STM32CubeMX.exe`。它负责创建 STM32 工程和生成基础代码。 |
+| STM32CubeCLT | 必需 | [官方页面](https://www.st.com/en/development-tools/stm32cubeclt.html) | `CMake\bin\cmake.exe`、`Ninja\bin\ninja.exe`、`st-arm-clang\bin\starm-clang.exe`、`GNU-tools-for-STM32\bin\arm-none-eabi-gdb.exe`。 |
+| OpenOCD | 烧录和调试必需 | [xPack OpenOCD](https://xpack.github.io/dev-tools/openocd/) | `openocd.exe`。建议使用解压后的 Windows 预编译包。 |
+| Visual Studio Code | 必需 | [下载页面](https://code.visualstudio.com/Download) | 不需要记录路径。它是编写、编译和调试代码的编辑器。 |
+| C/C++ 扩展 | 建议 | [C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) | 提供代码补全、错误提示和跳转到头文件。 |
+| CMake Tools 扩展 | 建议 | [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) | 提供 CMake 的配置、构建和启动入口。 |
+| Cortex-Debug 扩展 | 调试必需 | [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) | 让 VS Code 可以通过 OpenOCD 调试 STM32。 |
+| vscode-tasks 扩展 | 可选 | [actboy168/vscode-tasks](https://github.com/actboy168/vscode-tasks) | 将常用任务显示在 VS Code 状态栏；不安装也能从命令面板运行任务。 |
 
-1. 将 `Toolchain / IDE` 选择为 `CMake`。
-2. `ToolChainLocation` 可填写例如 `ToolChain`，也可以留空；留空时 CMake 文件会在工程根目录。
-3. 点击 **Generate Code**。
+还需要一个已经连接到目标板的调试器，例如 CMSIS-DAP 或 ST-LINK。它负责把电脑与 STM32 芯片连接起来。确认开发板已供电，并正确连接 SWDIO、SWCLK、GND；必要时还应连接 NRST。
 
-生成后，工程根目录中必须有 `.ioc` 文件，并且 `.ioc` 内应包含 `ProjectManager.TargetToolchain=CMake`。配置器会自动按 `ToolChainLocation` 查找 `CMakeLists.txt`，不要求目录名称固定为 `ToolChain`。
+以 STM32CubeCLT 安装到 `D:\Tool\ST\STM32CubeCLT_1.22.0` 为例，后面需要选择的文件通常是：
 
-### 3. 复制 VS Code 模板和配置器
+```text
+D:\Tool\ST\STM32CubeCLT_1.22.0\CMake\bin\cmake.exe
+D:\Tool\ST\STM32CubeCLT_1.22.0\Ninja\bin\ninja.exe
+D:\Tool\ST\STM32CubeCLT_1.22.0\st-arm-clang\bin\starm-clang.exe
+D:\Tool\ST\STM32CubeCLT_1.22.0\GNU-tools-for-STM32\bin\arm-none-eabi-gdb.exe
+D:\Tool\xpack-openocd-0.12.0-7\bin\openocd.exe
+```
 
-本仓库提供可直接复制的模板：[templates/.vscode](templates/.vscode)。将其中**全部文件**复制到 CubeMX 工程根目录下的 `.vscode`，再将发布包中的 `PathConfigurator.exe` 也放进该目录：
+STM32CubeCLT 已包含本流程所需的 CMake、Ninja、编译器和 GDB，不要再为这些组件单独安装其他版本。
+
+### 1.2 创建并配置第一个项目
+
+#### 第一步：用 STM32CubeMX 生成代码
+
+1. 打开 STM32CubeMX，选择芯片或开发板并完成引脚、时钟和外设设置。
+2. 打开 **Project Manager** 页面。
+3. 将 `Toolchain / IDE` 设为 `CMake`。
+4. `ToolChainLocation` 可以填 `ToolChain`，也可以留空。它只决定 CMake 文件放在哪里，不影响配置器使用。
+5. 点击 **Generate Code**。
+
+生成成功后，工程根目录应包含一个 `.ioc` 文件。例如：
 
 ```text
 MyStm32Project/
 ├─ MyStm32Project.ioc
-├─ ToolChain/                         # 由 .ioc 的 ToolChainLocation 决定，名称不固定
-│  └─ CMakeLists.txt
-└─ .vscode/
-   ├─ PathConfigurator.exe            # 从本仓库 Releases 下载
-   ├─ settings.example.json            # 模板，提交 Git
-   ├─ tasks.json                       # 编译、烧录和配置任务，提交 Git
-   └─ launch.json                      # Cortex-Debug 配置，提交 Git
+├─ Core/
+├─ Drivers/
+└─ ToolChain/                 # 此目录名称可能不同，也可能不存在
+   └─ CMakeLists.txt
 ```
 
-发布版 EXE 从本仓库的 [Releases](../../releases) 页面获取。不要先创建 `settings.json`；它由配置器为当前电脑生成。
+#### 第二步：复制 VS Code 模板
 
-将以下内容加入 **STM32 工程自身** 的 `.gitignore`：
+从本仓库的 [templates/.vscode](templates/.vscode) 复制整个 `.vscode` 文件夹到 STM32 工程根目录。若获取的是源码仓库而不是发布包，还需要从 [Releases](../../releases) 下载 `PathConfigurator.exe`，放入这个 `.vscode` 文件夹。
+
+最终目录应类似：
+
+```text
+MyStm32Project/
+├─ MyStm32Project.ioc
+├─ ToolChain/
+│  └─ CMakeLists.txt
+└─ .vscode/
+   ├─ PathConfigurator.exe
+   ├─ extensions.json
+   ├─ launch.json
+   ├─ settings.example.json
+   └─ tasks.json
+```
+
+打开 VS Code，选择 **File > Open Folder**，并选择最外层的 `MyStm32Project` 文件夹。不要只打开 `ToolChain` 或 `Core` 文件夹。
+
+VS Code 若提示安装推荐扩展，选择安装；否则按 `Ctrl+Shift+X` 搜索并安装上一节列出的扩展。
+
+#### 第三步：运行配置器
+
+1. 按 `Ctrl+Shift+P`，输入并执行 **Tasks: Run Task**。
+2. 选择 `Configure Local Toolchain (GUI)`。
+3. 在弹出的窗口中选择 1.1 节记录的 `cmake.exe`、`ninja.exe`、`starm-clang.exe`、`arm-none-eabi-gdb.exe` 和 `openocd.exe`。
+4. 使用 CMSIS-DAP 时，调试接口选择 `cmsis-dap.cfg`；使用 ST-LINK 时选择 `stlink.cfg`。目标芯片配置会按 `.ioc` 中的芯片型号自动建议，仍可手动修改。
+5. SVD 通常会自动找到。它用于调试时显示寄存器；只有自动匹配失败时才需要手动选择 `.svd` 文件。
+6. 第一次配置请点击 **重建**。它会根据 `settings.example.json` 创建当前电脑专用的 `settings.json` 和 `CMakeUserPresets.json`。
+7. 返回 VS Code 后执行 **Developer: Reload Window**，使扩展读取新配置。
+
+选择 CMake、Ninja、starm-clang 或 GDB 后，配置器会自动检查它们是否属于同一个 STM32CubeCLT 安装包，并可一次性补齐其它路径。选择 `openocd.exe` 后，程序会自动查找 OpenOCD 的 `scripts` 目录，无需额外填写。
+
+#### 第四步：编译、烧录和调试
+
+再次按 `Ctrl+Shift+P`，执行 **Tasks: Run Task**。最常用的任务是：
+
+| 操作 | 任务或按键 | 结果 |
+| --- | --- | --- |
+| 编译 | `Build Debug` | 生成用于调试的固件。 |
+| 烧录 | `Flash Debug (OpenOCD)` | 先编译，再下载到芯片、校验并复位。 |
+| 调试 | 按 `F5`，选择 `Debug With OpenOCD` | 先编译，再下载程序，停在 `main` 附近。此时可单击行号左侧设置断点。 |
+| 清理 | `CMake: Clean Debug` | 删除 Debug 构建目录，下次编译会重新生成。 |
+
+安装了 `vscode-tasks` 后，状态栏会显示“配置、编译、烧录、清理”图标；鼠标悬停可看到说明。未安装该扩展时，上述任务仍可通过 **Tasks: Run Task** 正常执行。
+
+## 2. 扩展介绍
+
+本章面向已经知道工程、源文件和头文件用途，希望维护项目的人。
+
+### 2.1 Debug 与 Release
+
+- `Debug`：用于断点、单步和查看变量。默认推荐在日常开发中使用。
+- `Release`：用于正式运行，通常会启用更高优化并减小固件体积，但不适合逐行调试。
+
+通过 `CMake: Configure Debug`、`Build Debug` 构建 Debug；通过 `CMake: Configure Release`、`Build Release` 构建 Release。调试模板默认运行 Debug 固件。
+
+### 2.2 添加 App、BSP、Mod 等用户代码
+
+打开配置器后进入 **CMake 构建目标配置** 页：
+
+1. 在“源文件 / 源目录”中选择一个工程分组，或新建虚拟分组。
+2. 点击“添加文件”可选择一个或多个源文件；点击“添加源目录”会递归加入该目录中的 C、C++ 和汇编源文件。
+3. 切换到“头文件目录”，将包含 `.h` 文件的目录加入编译器搜索路径。
+4. 需要条件编译时，在“编译宏”中加入如 `USE_LOG` 或 `BOARD_REV=2`。
+5. 使用预编译库时，在“链接目录”中加入库所在目录；库文件本身仍应按工程实际需求在 CMake 中处理。
+6. 点击“生成”，然后执行一次 CMake Configure。
+
+虚拟分组只用于配置器内整理项目，不会创建或移动磁盘上的目录。双击右侧列表是在修改 CMake 指向的路径或宏，不会重命名磁盘文件。点击一个已加入的源目录时，右侧只读显示该目录中的实际文件和子目录。
+
+### 2.3 多人协作与 Git
+
+每个人电脑上的工具路径可能不同，因此下面的本机文件不要提交到 Git：
 
 ```gitignore
 .vscode/PathConfigurator.exe
@@ -62,205 +148,150 @@ MyStm32Project/
 **/CMakeUserPresets.json.bak
 ```
 
-### 4. 运行一次本机工具链配置
-
-1. 在 VS Code 中选择 **File: Open Folder**，打开**工程根目录**，不要只打开 `ToolChain` 目录。
-2. 按 `Ctrl+Shift+P`，执行 **Tasks: Run Task**，选择 `Configure Local Toolchain (GUI)`。
-3. 在弹出的窗口中选择本机的 `cmake.exe`、`ninja.exe`、`starm-clang.exe`、`arm-none-eabi-gdb.exe` 和 `openocd.exe`。
-4. 使用 CMSIS-DAP 时选择 `cmsis-dap`；使用 ST-LINK 时选择 `stlink`。程序会在 OpenOCD 的 `interface`、`target` 目录中校验文件，并为当前芯片尝试匹配 target 和 SVD。
-5. 首次使用点击 `确认并生成（从 example）`。程序会使用模板创建本机 `.vscode/settings.json`；已有本机 `settings.json` 时，选择 `确认并生成（从 settings）` 可保留其他个人设置。
-6. 生成后执行 VS Code 命令 **Developer: Reload Window**。
-
-选择 CMake、Ninja 或 `starm-clang` 后，程序会向上检查 `STM32CubeCLT_metadata.bat`。如果识别到 STM32CubeCLT，会提示一次性补齐包内的 CMake、Ninja、starm-clang、GDB 路径，并尝试匹配当前芯片的 SVD。选择 `openocd.exe` 后，程序自动寻找其 `scripts` 目录，不需要单独配置。
-
-### 5. 编译、烧录和调试
-
-配置完成后，继续使用 **Tasks: Run Task**：
-
-1. `Build Debug`：生成 `Debug` 版本 ELF、HEX、BIN 等文件。
-2. `Flash Debug (OpenOCD)`：自动先编译，再通过已选择的 OpenOCD 调试器烧录、校验并复位。
-3. 按 `F5`，选择 `Debug With OpenOCD`：Cortex-Debug 会自动先编译，然后下载程序并停在 `main` 附近，可设置断点和查看 SVD 外设寄存器。
-
-需要优化和较小体积时执行 `Build Release`。`CMake: Clean Debug` 会删除整个 Debug 构建目录，用于解决移动工程后 CMakeCache 路径不一致等问题。
-
-## 它还解决多人协作问题
-
-多人共用 STM32 工程时，代码仓库中的 CMake、任务和调试配置可以保持一致，但每个人安装工具的位置通常不同，例如：
+下面的文件属于工程规则，应和源代码一起提交：
 
 ```text
-D:\Tool\ST\STM32CubeCLT_1.22.0
-C:\ST\STM32CubeCLT_1.22.0
-E:\Tools\OpenOCD
+.vscode/extensions.json
+.vscode/launch.json
+.vscode/settings.example.json
+.vscode/tasks.json
+<CMake 工程目录>/project-config.json
+<CMake 工程目录>/cmake/PathConfiguratorProject.cmake
+<CMake 工程目录>/cmake/PathConfiguratorCompilerCompat.cmake
 ```
 
-本程序将这些本机路径保存到 `.vscode/settings.json` 和 `CMakeUserPresets.json`。这两个文件不应提交 Git；工程共用的 `tasks.json`、`launch.json`、`settings.example.json`、`project-config.json` 和 CMake 文件仍可正常提交。
+工程中的 CMake 目录由 `.ioc` 的 `ProjectManager.ToolChainLocation` 决定。它可以叫 `ToolChain`、`CMake`，也可以直接是工程根目录；不要在任务或自己的代码中假定它一定名为 `ToolChain`。
 
-程序启动时会在后台检查 GitHub Releases；仅在发现新版本时于右上角显示提示。通过菜单 **其它 -> 关于** 可查看当前版本和仓库地址，并立即重新检查更新；状态标签会显示“当前已是最新版”“当前版本较旧”或“检查更新失败”。检查更新只读取 GitHub 的公开 Release 信息，不会上传工程文件或本机配置。
+### 2.4 复用本机工具路径
 
-对于 STM32H7，CubeMX/CMSIS 会把 st-arm-clang（Clang）识别为 GCC，并对一个 Clang 不支持的 CMSIS 属性给出兼容警告。配置器会在工程的 `cmake/PathConfiguratorCompilerCompat.cmake` 中仅对 Clang 关闭该警告，并在 CubeMX 源码子目录之前接入它。这不修改任何 CubeMX/CMSIS 头文件；该模块应提交 Git，后续重新生成代码不需要再次运行配置器。
+菜单 **配置** 提供三个选项：
 
-## 工具路径与配置方式
+- **保存为默认配置**：将 CMake、Ninja、st-arm-clang、GDB、OpenOCD 和调试接口保存到 `%LOCALAPPDATA%\PathConfigurator\user-settings.json`。
+- **读取默认配置**：把已保存的通用工具路径填入当前工程。
+- **从注册表检查 CLT 包**：尝试查找已安装的 STM32CubeCLT 并补齐可用路径。
 
-也可以双击 `.vscode/PathConfigurator.exe`，或在终端指定工程目录：
+默认配置不会保存 SVD、目标芯片配置、芯片型号或项目名，因为这些内容随工程而变化。工程尚未配置 SVD 时，读取默认配置或检测到 STM32CubeCLT 后会尝试自动匹配。
 
-```powershell
-.\.vscode\PathConfigurator.exe /workspace "D:\Code\MyStm32Project"
-```
+### 2.5 更新提示
 
-程序会从指定目录向上查找 `.ioc` 和由 CubeMX 生成的 CMake 代码。若 `.ioc` 不是 CMake 项目，或尚未生成代码，会显示原因并退出。
+程序窗口创建后会在后台静默检查 GitHub Releases。网络不可用、检查失败或当前已是最新版时不会打断操作；只有检测到新版本时，右上角才会出现红色版本提示。菜单 **其它 > 关于** 可查看当前版本、仓库地址并手动检查更新。
 
-窗口中各路径的含义如下：
+## 3. 细节讲解
 
-| 配置项 | 选择内容 |
-| --- | --- |
-| CMake | `cmake.exe` |
-| Ninja | `ninja.exe` |
-| starm-clang | `starm-clang.exe` |
-| ARM GDB | `arm-none-eabi-gdb.exe` |
-| OpenOCD | `openocd.exe` |
-| 调试器 | 常用 `cmsis-dap.cfg` 或 `stlink.cfg`；也可点“选择...”选择其它 interface 配置 |
-| 目标配置文件 | 例如 `stm32f4x.cfg`、`stm32h7x.cfg`；可手动编辑或从 OpenOCD 的 `target` 目录选择 |
-| SVD | 芯片对应的 `.svd` 文件 |
+本章面向需要确认工程改动范围和配置边界的专业使用者。
 
-当工程已经有 `.vscode/settings.json` 时，使用 `确认并生成（从 settings）` 更新配置器负责的键，并保留其他个人 VS Code 设置；`确认并生成（从 example）` 则从模板重新生成配置。
+### 3.1 工程识别与路径优先级
 
-## 默认配置和自动检测
+启动后，程序从当前目录或 `/workspace` 指定目录向上查找 `.ioc`，并确认其中已选择 CMake 工具链且已生成 CMake 文件。随后按以下优先级读取工具路径；每个路径都会检查文件是否存在、文件名是否正确，并验证 OpenOCD 接口和目标芯片配置是否存在。
 
-每次读取路径都会检查文件是否存在、文件名是否正确，以及 OpenOCD 配置是否有效。启动时按下列优先级处理：
+1. 当前工程 `.vscode/settings.json` 中的有效配置。
+2. `%LOCALAPPDATA%\PathConfigurator\user-settings.json` 中的有效默认配置。使用前会询问。
+3. Windows 注册表中检测到的 STM32CubeCLT。补充前会询问。
+4. 当前窗口中手动选择的路径。
 
-1. 工程 `.vscode/settings.json` 中有效的路径。
-2. `%LOCALAPPDATA%\PathConfigurator\user-settings.json` 中的默认路径，程序会先询问是否使用。
-3. Windows 注册表中检测到的 STM32CubeCLT，程序会先询问是否补充。
-4. 用户在界面中手动选择的路径。
+`settings.example.json` 是工程模板；首次选择“重建”时以它为基础创建 `settings.json`。后续选择“修改”时，只更新 `CustomCfg.*`、CMake Tools 所需的相关键和本机预设，同时保留用户加入的其它 VS Code 设置。
 
-默认配置只保存跨工程通用的工具路径。读取默认配置后，若当前工程尚未配置 SVD，程序会根据 `.ioc` 中的芯片型号和已识别的 STM32CubeCLT 自动匹配 SVD；OpenOCD target 同样会按当前芯片自动选择，仍可在界面中手动修改。
+### 3.2 VS Code 配置键
 
-“配置”菜单提供：
-
-- `保存为默认配置`：保存 CMake、Ninja、starm-clang、GDB、OpenOCD 和调试器 interface，供其他 STM32 工程复用。
-- `读取默认配置`：读取并覆盖界面中的共享工具路径。
-- `从注册表检查 CLT 包`：手动搜索 STM32CubeCLT 安装记录。
-
-默认配置**不会**保存 SVD、OpenOCD target、芯片类型或项目名，因为它们属于具体工程。
-
-## 更新提示
-
-程序打开后会在后台静默查询 GitHub Releases。网络不可用、没有 Release、版本号无法识别或当前已经是最新版时，界面不会显示提示，也不会影响配置流程。
-
-仅当检测到高于程序内置版本的新 Release 时，窗口右上角才会显示红色的“有最新版 Vx.x.x”。点击该文字会打开对应的 GitHub Release 页面；程序不会自动下载或安装任何内容。
-
-## VS Code 编译、烧录和调试
-
-本程序只写入路径和相关 VS Code 配置键；它不会直接编译、烧录或启动调试器。工程的 `.vscode/tasks.json` 和 `.vscode/launch.json` 需要使用以下 `CustomCfg.*` 键：
+模板的 `tasks.json`、`launch.json` 通过以下键读取配置器写入的路径：
 
 | 键 | 用途 |
 | --- | --- |
-| `CustomCfg.cmakePath` | CMake 可执行文件 |
-| `CustomCfg.ninjaPath` | Ninja 可执行文件 |
-| `CustomCfg.starmClangPath` | STM32 st-arm-clang 编译器 |
-| `CustomCfg.gdbPath` | Cortex-Debug 使用的 GDB |
-| `CustomCfg.openocdPath` | OpenOCD 可执行文件 |
-| `CustomCfg.openocd.interface` | OpenOCD interface 文件名，不含 `.cfg` |
-| `CustomCfg.openocd.target` | OpenOCD target 文件名，含 `.cfg` |
-| `CustomCfg.svdFile` | Cortex-Debug 使用的 SVD 文件 |
-| `CustomCfg.projectName` | CubeMX CMake 项目名 |
-| `CustomCfg.toolchainLocation` | `.ioc` 指定的 CMake 目录，相对工程根目录 |
+| `CustomCfg.cmakePath` | CMake 程序路径 |
+| `CustomCfg.ninjaPath` | Ninja 程序路径 |
+| `CustomCfg.starmClangPath` | ST 的 Clang 编译器路径 |
+| `CustomCfg.gdbPath` | Cortex-Debug 使用的 GNU Arm GDB 路径 |
+| `CustomCfg.openocdPath` | OpenOCD 程序路径 |
+| `CustomCfg.openocd.interface` | OpenOCD 接口配置名，不含 `.cfg` |
+| `CustomCfg.openocd.target` | OpenOCD 目标芯片配置名，包含 `.cfg` |
+| `CustomCfg.svdFile` | Cortex-Debug 的 SVD 文件路径 |
+| `CustomCfg.projectName` | CubeMX CMake 工程名 |
+| `CustomCfg.toolchainLocation` | `.ioc` 中指定的 CMake 工程目录 |
 
-Cortex-Debug 的关键配置示例：
+配置器在 CMake 工程目录中创建本机 `CMakeUserPresets.json`，包含 `Debug-Local` 和 `Release-Local` 预设。这些预设将 CMake、Ninja、st-arm-clang 和 GDB 的本机路径传递给构建过程。CMake Tools 也会读取同一工程目录中的预设。
 
-```jsonc
-{
-  "type": "cortex-debug",
-  "request": "launch",
-  "servertype": "openocd",
-  "serverpath": "${config:CustomCfg.openocdPath}",
-  "gdbPath": "${config:CustomCfg.gdbPath}",
-  "configFiles": [
-    "interface/${config:CustomCfg.openocd.interface}.cfg",
-    "target/${config:CustomCfg.openocd.target}"
-  ],
-  "svdFile": "${config:CustomCfg.svdFile}"
-}
-```
+### 3.3 CMake 构建目标配置的输出
 
-完成配置后，典型工作流为：
-
-1. 执行 `CMake: Configure Debug`。
-2. 执行 `Build Debug`。
-3. 执行 `Flash Debug (OpenOCD)`，或按 `F5` 交给 Cortex-Debug 烧录并调试。
-
-任务名称由工程自己的 `tasks.json` 决定；上述名称只是推荐约定。
-
-## CMake 目标配置页
-
-“CMake 目标配置”页用于把用户代码纳入 CubeMX 的 CMake 工程，可维护：
-
-- 目标文件 / 文件夹
-- 头文件目录
-- 编译宏
-- 链接目录
-
-路径统一以工程根目录显示，例如 `\App`、`\BSP`。双击已有行可直接编辑；双击最后的空白行可新增。
-
-在“目标文件 / 文件夹”类别中，左侧是**工程树**。根节点下可创建任意层级的**虚拟文件夹**，并将源文件或**源目录**加入当前虚拟文件夹。虚拟文件夹以蓝色文字显示；源目录以金色文字显示；从源目录按需展开的实际下级目录称为**子目录**，以浅金色文字显示。展开源目录或子目录时才读取下一层，避免大型工程启动时遍历全部目录。点击源目录或子目录后，右侧只读显示当前实际目录直接包含的文件和目录；这里不会重命名、移动或修改任何工程配置。虚拟文件夹只写入 `project-config.json`，不会创建、移动或重命名磁盘目录；双击虚拟文件夹只能重命名工程内的分组。双击普通配置列表行编辑的是 CMake 指向的路径或宏，不会重命名磁盘文件或目录。
-
-删除 CMake 源文件、源目录配置或虚拟文件夹时，程序只显示一次三选项确认框：选择“是”会移除工程配置并将列出的实际文件或目录移到回收站；选择“否”仅移除工程配置；选择“取消”不做任何操作。删除虚拟文件夹会同时删除其下级虚拟文件夹及已归属的配置项；虚拟文件夹本身不对应任何磁盘目录，只有选择“是”时才会处理列出的实际源文件或目录。在源目录或子目录的只读查看中，选择“是”才会将选中的实际文件或目录移到回收站；该视图没有对应的工程配置，因此选择“否”不会执行删除。
-
-选择源目录后，生成的 CMake 使用 `file(GLOB_RECURSE ... CONFIGURE_DEPENDS)` 递归收集 C、C++ 和汇编源文件。保存时，程序会在 `.ioc` 所指定的 CMake 目录中生成并更新：
+保存“CMake 构建目标配置”后，程序会在 `.ioc` 指定的 CMake 工程目录中更新：
 
 ```text
 project-config.json
 cmake/PathConfiguratorProject.cmake
+CMakeLists.txt
 ```
 
-首次保存还会在同一目录的 `CMakeLists.txt` 中加入一次：
+`project-config.json` 保存源文件、源目录、头文件目录、编译宏、链接目录和虚拟分组；`PathConfiguratorProject.cmake` 将这些规则加入 CubeMX 的 CMake 目标。首次保存时，`CMakeLists.txt` 只增加一次 `include(...)`，以加载该模块。
 
-```cmake
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorProject.cmake")
-```
+源目录使用递归收集规则。目录内新增或删除源文件后，应重新执行 CMake Configure，再编译。
 
-这三个文件属于工程构建规则，应提交 Git。新增或删除源目录及其子目录中的源文件后，重新执行 CMake Configure。
+首次写入工具链配置时，还可能创建 `cmake/PathConfiguratorCompilerCompat.cmake` 并在 `CMakeLists.txt` 中增加一次引用。它仅为 st-arm-clang 处理 CubeMX H7 CMSIS 的兼容警告，不会修改 CubeMX 生成的头文件或源文件。
 
-首次确认工具链配置还会生成 `cmake/PathConfiguratorCompilerCompat.cmake`，并在同一目录的 `CMakeLists.txt` 中于 `add_executable(...)` 与 `add_subdirectory(cmake/stm32cubemx)` 之前加入一次 `include(...)`。它仅在 st-arm-clang/Clang 下抑制 CubeMX H7 CMSIS 的 `optimize("Os")` 兼容警告，不改动 CMSIS 头文件；这个文件同样应提交 Git。
+### 3.4 文件读写与安全边界
 
-## 程序读写范围
-
-| 类型 | 文件或位置 |
+| 类别 | 文件或位置 |
 | --- | --- |
-| 读取 | 工程 `.ioc`、CMakeLists.txt、`.vscode/settings.json`、`.vscode/settings.example.json`、用户默认配置、STM32CubeCLT 注册表项 |
-| 写入 | `.vscode/settings.json`、`CMakeUserPresets.json`、`project-config.json`、`cmake/PathConfiguratorProject.cmake`、`cmake/PathConfiguratorCompilerCompat.cmake` |
-| 首次保存目标配置时修改 | CMakeLists.txt：只补入一次 `include(...)` |
-| 不修改 | 系统环境变量、`.ioc`、CubeMX 生成的源代码、OpenOCD 配置文件、固件内容 |
+| 读取 | `.ioc`、CMakeLists.txt、`.vscode/settings.json`、`.vscode/settings.example.json`、用户默认配置、STM32CubeCLT 注册表项 |
+| 写入 | `.vscode/settings.json`、CMakeUserPresets.json、project-config.json、PathConfiguratorProject.cmake、PathConfiguratorCompilerCompat.cmake |
+| 可能修改 | CMakeLists.txt，只插入配置器维护的唯一 `include(...)` 行 |
+| 不会修改 | 系统环境变量、`.ioc`、CubeMX 生成的源文件和头文件、OpenOCD 配置文件、已烧录的固件 |
 
-点击“生成”“重建”“修改”或保存默认配置时，程序会先列出本次会修改或创建的文件，并询问是否生成 `.bak` 备份。选择“是”时，已有文件会在原子替换前创建备份；选择“否”时直接原子写入，不保留备份；选择“取消”或关闭备份窗口时不修改任何文件。写入成功后主窗口保持打开，并在状态栏提示结果。
+点击“重建”“修改”“生成”或“保存为默认配置”时，会先列出本次可能修改或创建的文件，并询问是否生成 `.bak` 备份。选择取消或关闭该提示窗口时，不会修改文件。
 
-## 命令行参数
+可选命令行用法：
 
 ```text
 PathConfigurator.exe
-PathConfigurator.exe /workspace <STM32工程目录>
-PathConfigurator.exe /validate <STM32工程目录>
+PathConfigurator.exe /workspace <STM32 工程目录>
+PathConfigurator.exe /validate <STM32 工程目录>
 PathConfigurator.exe /help
 ```
 
-发布新版本时，请同步修改 `src/main.cpp` 中的 `kAppVersion`，创建对应的 Git 标签（例如 `v1.0.1`），并将构建产物上传到 GitHub Release。
+`/validate` 只检查工程 `.vscode/settings.json`，不修改任何文件。
 
-`/validate` 只验证工程 `.vscode/settings.json`，不会修改文件。GUI 正常关闭和配置完成均会返回退出码 `0`；配置错误、工程不符合条件或验证失败会返回非零退出码，便于 VS Code 任务判断结果。
+## 4. 常见问题
 
-## 常见问题
+### 配置器提示“不是 CMake 工程”或“未生成 CMake 代码”
 
-**提示不是 CMake 工程或未生成 CMake 代码**
+回到 STM32CubeMX 的 **Project Manager**，将 `Toolchain / IDE` 设为 `CMake`，然后重新点击 **Generate Code**。确认 VS Code 打开的是包含 `.ioc` 的最外层工程目录。
 
-在 STM32CubeMX 的 Project Manager 中选择 `Toolchain / IDE = CMake`，设置或确认 `ToolChainLocation`，然后重新生成代码。
+### 配置器中不知道每个路径该选什么
 
-**CMake 提示 `Set STARM_CLANG_PATH`**
+只选择 1.1 节表格中列出的 `.exe` 文件，不要选择文件夹。选择 STM32CubeCLT 中任意一个工具后，程序通常会识别安装包并询问是否自动补齐其它工具。OpenOCD 只需选择 `openocd.exe`。
 
-重新运行配置器，选择有效的 `starm-clang.exe`，再点击“确认并生成”。生成后的 `CMakeUserPresets.json` 是每位开发者本机文件，不应从其他电脑复制。
+### SVD 没有自动出现
 
-**Cortex-Debug 找不到 OpenOCD 或 GDB**
+先确认已选中的 CMake、Ninja、starm-clang 或 GDB 来自 STM32CubeCLT。重新选择其中任意一个文件后，配置器会重新尝试匹配。仍失败时，手动选择与 `.ioc` 芯片对应的 `.svd` 文件；SVD 不影响编译和烧录，只影响调试时的寄存器显示。
 
-确认 `launch.json` 使用的是上文的 `CustomCfg.openocdPath` 和 `CustomCfg.gdbPath`，然后在配置器中选择对应的实际 `.exe` 文件。
+### 编译时提示 `Set STARM_CLANG_PATH` 或提示找不到 Ninja
 
-**切换芯片后 target 或 SVD 不匹配**
+重新运行配置器，确认选择的是 STM32CubeCLT 内的 `starm-clang.exe` 和 `ninja.exe`，第一次配置点击“重建”。之后执行 **Developer: Reload Window**，再运行 `Build Debug`。
 
-重新运行配置器。选择或自动识别 STM32CubeCLT 后，程序会按 `.ioc` 中的芯片型号匹配 SVD；OpenOCD target 仍可在界面中手动选择。
+### CMake 提示 `CMakeCache.txt directory is different` 或工程路径已经移动
+
+运行 `CMake: Clean Debug`，然后重新运行 `Build Debug`。这会删除旧路径留下的 Debug 构建缓存，并在新目录重新配置。
+
+### 烧录失败，提示找不到调试器、不能连接目标或无法识别芯片
+
+依次检查：
+
+1. 开发板是否已供电。
+2. 调试器是否连接到电脑，Windows 是否识别它。
+3. SWDIO、SWCLK、GND 是否正确连接；必要时连接 NRST。
+4. 配置器中“调试接口”是否与实际硬件一致，例如 CMSIS-DAP 使用 `cmsis-dap.cfg`，ST-LINK 使用 `stlink.cfg`。
+5. “目标芯片配置”是否和芯片系列一致。可点击选择按钮从 OpenOCD 的 target 配置中重新选择。
+
+### 按 F5 后 Cortex-Debug 提示找不到 GDB、OpenOCD 或 ELF 文件
+
+重新运行配置器并检查 GDB、OpenOCD 路径。随后先运行 `Build Debug`；构建成功后，确认 CMake 构建目录中已有 `<项目名>.elf`，再按 F5。不要手动改动 `launch.json` 中的 `CustomCfg.*` 引用。
+
+### `#include "main.h"` 无法跳转或没有代码补全
+
+安装 VS Code 的 C/C++ 扩展，先完成一次 `Build Debug` 或 CMake Configure，再执行 **Developer: Reload Window**。配置器会把 `compile_commands.json` 的位置写入 VS Code 配置，扩展随后会据此建立代码索引。
+
+### 我想换电脑，是否要重新配置？
+
+要。复制工程和模板即可，但新电脑仍需安装工具并运行一次 `Configure Local Toolchain (GUI)`。不要复制别人的 `settings.json` 或 `CMakeUserPresets.json`，因为里面保存的是对方电脑的绝对路径。
+
+### 我只想修改路径，不想覆盖自己的 VS Code 设置
+
+配置器存在现有 `settings.json` 时，使用“修改”。它会保留不属于配置器的个人设置；“重建”用于从 `settings.example.json` 重新建立本机配置。

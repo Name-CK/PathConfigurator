@@ -444,7 +444,7 @@ bool ValidateCmakeTargetConfig(const CMakeTargetConfig& config, std::wstring& er
     }
     for (const TargetSourceEntry& source : config.sources) {
         const std::wstring path = CmakePath(source.path);
-        if (!IsSafeCmakeValue(path) || !PathIsRelativeW(path.c_str())) { error = L"源文件或源目录必须是相对于 .ioc 指定 CMake 目录的路径，且不能包含不支持的字符。"; return false; }
+        if (!IsSafeCmakeValue(path) || !PathIsRelativeW(path.c_str())) { error = L"源文件或源目录必须使用有效的 CMake 相对路径，且不能包含不支持的字符。"; return false; }
         const std::wstring virtualFolder = NormalizeVirtualFolderPath(source.virtualFolder);
         if (!source.virtualFolder.empty() && (virtualFolder.empty() || !IsValidVirtualFolderPath(virtualFolder, false))) {
             error = L"源项的虚拟文件夹名称无效。";
@@ -457,7 +457,7 @@ bool ValidateCmakeTargetConfig(const CMakeTargetConfig& config, std::wstring& er
         for (const std::wstring& value : *lists[i]) {
             if (!IsSafeCmakeValue(value)) { error = std::wstring(names[i]) + L"包含不支持的字符。"; return false; }
             if (i != 1 && !PathIsRelativeW(CmakePath(value).c_str())) {
-                error = std::wstring(names[i]) + L"必须是相对于 .ioc 指定 CMake 目录的路径。";
+                error = std::wstring(names[i]) + L"必须使用有效的 CMake 相对路径。";
                 return false;
             }
         }
@@ -852,7 +852,7 @@ bool LoadWorkspace(const std::wstring& root, WorkspaceInfo& info, std::wstring& 
         return false;
     }
     info.toolchainRoot = ResolveToolchainDirectory(info.root);
-    if (info.toolchainRoot.empty()) { error = L"项目尚未生成 CMake 代码，未找到由 ProjectManager.ToolChainLocation 指定的目录或 CMakeLists.txt。"; return false; }
+    if (info.toolchainRoot.empty()) { error = L"工程尚未生成 CMake 代码，未找到由 ProjectManager.ToolChainLocation 指定的目录或 CMakeLists.txt。"; return false; }
     info.toolchainLocation = RelativeToolchainLocation(info.root, info.toolchainRoot);
     info.settingsPath = JoinPath(info.root, L".vscode\\settings.json");
     info.examplePath = JoinPath(info.root, L".vscode\\settings.example.json");
@@ -910,7 +910,7 @@ ValidationResult ValidateTools(const ToolPaths& tools, bool requireSvd) {
     struct Item { const wchar_t* label; const wchar_t* fileName; const std::wstring* value; } items[] = {
         {L"CMake", L"cmake.exe", &tools.cmake}, {L"Ninja", L"ninja.exe", &tools.ninja},
         {L"starm-clang", L"starm-clang.exe", &tools.starmClang},
-        {L"GDB", L"arm-none-eabi-gdb.exe", &tools.gdb}, {L"OpenOCD", L"openocd.exe", &tools.openocd}
+        {L"GNU Arm GDB", L"arm-none-eabi-gdb.exe", &tools.gdb}, {L"OpenOCD", L"openocd.exe", &tools.openocd}
     };
     for (const Item& item : items) {
         const std::wstring value = item.value ? *item.value : L"";
@@ -918,8 +918,8 @@ ValidationResult ValidateTools(const ToolPaths& tools, bool requireSvd) {
         if (!ok) { r.ok = false; r.message += std::wstring(item.label) + L"：" + (item.value ? *item.value : L"") + L"\r\n"; }
     }
     struct OpenOcdConfig { const wchar_t* label; const std::wstring* name; const wchar_t* folder; bool appendExtension; } openOcdConfigs[] = {
-        {L"OpenOCD interface", &tools.openocdInterface, L"interface", true},
-        {L"OpenOCD target", &tools.openocdTarget, L"target", false}
+        {L"OpenOCD 调试接口", &tools.openocdInterface, L"interface", true},
+        {L"OpenOCD 目标芯片配置", &tools.openocdTarget, L"target", false}
     };
     std::wstring detectedScripts;
     const bool canCheckConfigs = FileExists(tools.openocd) && DetectOpenOcdScripts(tools.openocd, detectedScripts);
@@ -1158,7 +1158,7 @@ bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config,
     if (!FileExists(info.cmakeTargetConfigPath)) return true;
     std::string document;
     if (!ReadBytes(info.cmakeTargetConfigPath, document)) {
-        error = L"无法读取工程 CMake 配置：" + info.cmakeTargetConfigPath;
+        error = L"无法读取工程构建目标配置：" + info.cmakeTargetConfigPath;
         return false;
     }
     if (!ReadJsonStringArray(document, "virtualFolders", config.virtualFolders) ||
@@ -1167,7 +1167,7 @@ bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config,
         !ReadJsonStringArray(document, "compileDefinitions", config.compileDefinitions) ||
         !ReadJsonStringArray(document, "linkDirectories", config.linkDirectories) ||
         !ValidateCmakeTargetConfig(config, error)) {
-        if (error.empty()) error = L"工程 CMake 配置的 JSON 格式无效：" + info.cmakeTargetConfigPath;
+        if (error.empty()) error = L"工程构建目标配置的 JSON 格式无效：" + info.cmakeTargetConfigPath;
         return false;
     }
     return true;
@@ -1176,7 +1176,7 @@ bool LoadCMakeTargetConfig(const WorkspaceInfo& info, CMakeTargetConfig& config,
 bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& config, std::wstring& error, bool createBackup) {
     if (!ValidateCmakeTargetConfig(config, error)) return false;
     if (!FolderExists(info.toolchainRoot)) {
-        error = L"CMake 目录不存在：" + info.toolchainRoot;
+        error = L"CMake 工程目录不存在：" + info.toolchainRoot;
         return false;
     }
 
@@ -1205,7 +1205,7 @@ bool WriteCMakeTargetConfig(const WorkspaceInfo& info, const CMakeTargetConfig& 
     AppendJsonStringArray(json, "linkDirectories", config.linkDirectories, false);
     json += "}\n";
     if (!WriteBytesAtomic(info.cmakeTargetConfigPath, json, createBackup)) {
-        error = L"无法写入工程 CMake 配置：" + info.cmakeTargetConfigPath;
+        error = L"无法写入工程构建目标配置：" + info.cmakeTargetConfigPath;
         return false;
     }
 

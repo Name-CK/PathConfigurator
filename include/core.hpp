@@ -21,7 +21,7 @@ struct ToolPaths {
     std::wstring svd;
 };
 
-// CMake 目标配置中的源文件既可以是单个文件，也可以是递归收集的源目录。
+// CMake 构建目标配置中的源文件既可以是单个文件，也可以是递归收集的源目录。
 // virtualFolder 仅用于配置器的虚拟文件夹，不会创建磁盘目录，也不会改变 CMake 编译规则。
 struct TargetSourceEntry {
     std::wstring path;
@@ -81,7 +81,7 @@ ValidationResult ValidateTools(const ToolPaths& tools, bool requireSvd);
 // 检查配置器生成的 Debug/Release 本机预设是否仍与当前工具链一致；忽略用户额外添加的预设。
 bool IsCMakeUserPresetsCurrent(const WorkspaceInfo& info, const ToolPaths& tools);
 // 本机默认配置：%LOCALAPPDATA%\PathConfigurator\user-settings.json。
-// 仅保存 CMake、Ninja、starm-clang、GDB、OpenOCD 和调试器 interface，不保存 SVD 或 target。
+// 仅保存 CMake、Ninja、starm-clang、GNU Arm GDB、OpenOCD 和调试接口，不保存 SVD 或目标芯片配置。
 std::wstring GetUserDefaultSettingsPath();
 bool LoadUserDefaultSettings(ToolPaths& tools, std::wstring& error);
 bool WriteUserDefaultSettings(const ToolPaths& tools, std::wstring& error, bool createBackup = false);

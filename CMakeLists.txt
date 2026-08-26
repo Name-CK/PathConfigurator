@@ -13,7 +13,12 @@ set(PATHCONFIGURATOR_MSVC_INCLUDE "" CACHE PATH "MSVC STL include directory used
 # 程序启动后会自行隐藏独立控制台，用户仍只看到图形配置窗口。
 add_executable(PathConfigurator
     src/main.cpp
+    src/cmake_file_dialog.cpp
     src/core.cpp
+    src/page_router.cpp
+    src/target_config_controller.cpp
+    src/toolchain_controller.cpp
+    src/update_service.cpp
     resources/pathconfigurator.rc
 )
 

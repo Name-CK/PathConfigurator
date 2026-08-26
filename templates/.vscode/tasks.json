@@ -13,7 +13,7 @@
         "cwd": "${workspaceFolder}",
         "statusbar": {
           "label": "$(gear) 配置",
-          "detail": "配置: 启动 STM32 项目配置器，设置当前工程的工具链、OpenOCD 和 CMake 目标配置。",
+          "detail": "配置: 启动 STM32 项目配置器，设置当前工程的工具链、OpenOCD 和 CMake 构建目标配置。",
           "running": {
             "label": "$(sync~spin) 正在配置"
           }
