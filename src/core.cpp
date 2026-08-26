@@ -358,6 +358,64 @@ bool EnsureTargetConfigInclude(const WorkspaceInfo& info, std::wstring& error) {
     return true;
 }
 
+// CubeMX 的 H7 CMSIS 头文件以 __GNUC__ 判断 GCC 风格属性，而 st-arm-clang
+// 也会定义该宏。此模块仅在 CMake 实际选中 Clang 时抑制这一个兼容性警告。
+// 必须在 add_executable 和 CubeMX 的 stm32cubemx 子目录之前 include，才能传递给所有目标。
+bool EnsureCompilerCompatibilityModule(const WorkspaceInfo& info, std::wstring& error) {
+    const std::wstring cmakeDirectory = JoinPath(info.toolchainRoot, L"cmake");
+    const std::wstring modulePath = JoinPath(cmakeDirectory, L"PathConfiguratorCompilerCompat.cmake");
+    if (!FolderExists(cmakeDirectory) && !CreateDirectoryW(cmakeDirectory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        error = L"无法创建 CMake 模块目录：" + cmakeDirectory;
+        return false;
+    }
+    const std::string module =
+        "# PathConfigurator: STM32CubeMX/CMSIS 与 st-arm-clang 的兼容规则。\n"
+        "# Clang 为兼容 GCC 定义 __GNUC__，但不支持 CMSIS 使用的 optimize(\"Os\") 属性。\n"
+        "# 不修改 CubeMX 生成的 CMSIS 文件；仅对 Clang 关闭该兼容性警告。\n"
+        "if(CMAKE_C_COMPILER_ID STREQUAL \"Clang\")\n"
+        "  add_compile_options(-Wno-unknown-attributes)\n"
+        "endif()\n";
+    if (!WriteBytesAtomic(modulePath, module)) {
+        error = L"无法写入 Clang 兼容模块：" + modulePath;
+        return false;
+    }
+
+    const std::wstring cmakeListsPath = JoinPath(info.toolchainRoot, L"CMakeLists.txt");
+    std::string document;
+    if (!ReadBytes(cmakeListsPath, document)) {
+        error = L"无法读取 CMakeLists.txt：" + cmakeListsPath;
+        return false;
+    }
+    std::string lower = document;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    size_t targetPos = lower.find("add_executable(");
+    if (targetPos == std::string::npos) {
+        error = L"未在 CMakeLists.txt 中找到 CubeMX 的 add_executable(...)，无法安全接入 Clang 兼容规则。";
+        return false;
+    }
+    const std::string include =
+        "# PathConfigurator: st-arm-clang 与 CubeMX CMSIS 的兼容规则\n"
+        "include(\"${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorCompilerCompat.cmake\")\n\n";
+    const size_t includePos = document.find(include);
+    if (includePos != std::string::npos && includePos < targetPos) return true;
+    if (includePos != std::string::npos) {
+        // 迁移配置器旧版本放在 add_executable() 后的接入行。
+        document.erase(includePos, include.size());
+        lower = document;
+        for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        targetPos = lower.find("add_executable(");
+    } else if (document.find("PathConfiguratorCompilerCompat.cmake") != std::string::npos) {
+        error = L"已找到自定义的 PathConfiguratorCompilerCompat.cmake 引用，但它不在 add_executable(...) 之前；请手动移动后重新运行配置器。";
+        return false;
+    }
+    document.insert(targetPos, include);
+    if (!WriteBytesAtomic(cmakeListsPath, document)) {
+        error = L"无法更新 CMakeLists.txt：" + cmakeListsPath;
+        return false;
+    }
+    return true;
+}
+
 std::wstring ReadLineValue(const std::string& data, const char* key) {
     size_t p = data.find(key);
     if (p == std::string::npos) return {};
@@ -1047,6 +1105,9 @@ bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const
                         const std::wstring& chipType, const std::wstring& svd, bool fromExample, std::wstring& error) {
     std::wstring vscode = JoinPath(info.root, L".vscode");
     if (!FolderExists(vscode)) CreateDirectoryW(vscode.c_str(), nullptr);
+    // 兼容规则属于工程构建规则并应提交 Git，不能依赖每位开发者各自的本机预设。
+    // 先验证并接入它，避免无法安全修改 CMakeLists.txt 时仍写入本机配置。
+    if (!EnsureCompilerCompatibilityModule(info, error)) return false;
     std::string settings;
     if (fromExample && FileExists(info.examplePath)) {
         if (!ReadBytes(info.examplePath, settings)) { error = L"无法读取 settings.example.json"; return false; }
@@ -1087,7 +1148,7 @@ bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const
     const std::wstring presetPath = SlashPath(GetParentPath(tools.ninja)) + L";" +
         SlashPath(GetParentPath(tools.starmClang)) + L";" + SlashPath(GetParentPath(tools.gdb)) + L";$penv{PATH}";
     for (int i = 0; i < 2; ++i) {
-        presets += "    {\"name\": \"" + std::string(i ? "Release-Local" : "Debug-Local") + "\", \"inherits\": \"" + std::string(i ? "Release" : "Debug") + "\", \"binaryDir\": \"${sourceDir}/build/" + std::string(i ? "Release" : "Debug") + "\", \"cacheVariables\": {\"CMAKE_MAKE_PROGRAM\": \"" + JsonEscape(tools.ninja) + "\", \"CMAKE_C_FLAGS\": \"-Wno-unknown-attributes\", \"CMAKE_CXX_FLAGS\": \"-Wno-unknown-attributes\"}, \"environment\": {\"PATH\": \"" + JsonEscape(presetPath) + "\"}}";
+        presets += "    {\"name\": \"" + std::string(i ? "Release-Local" : "Debug-Local") + "\", \"inherits\": \"" + std::string(i ? "Release" : "Debug") + "\", \"binaryDir\": \"${sourceDir}/build/" + std::string(i ? "Release" : "Debug") + "\", \"cacheVariables\": {\"CMAKE_MAKE_PROGRAM\": \"" + JsonEscape(tools.ninja) + "\"}, \"environment\": {\"PATH\": \"" + JsonEscape(presetPath) + "\"}}";
         presets += i ? "\n" : ",\n";
     }
     presets += "  ],\n  \"buildPresets\": [{\"name\": \"Debug-Local\", \"configurePreset\": \"Debug-Local\"}, {\"name\": \"Release-Local\", \"configurePreset\": \"Release-Local\"}]\n}\n";

@@ -111,7 +111,11 @@ int main() {
     const std::wstring libraryDirectory = pathconfig::JoinPath(fixture.Path(), L"Middlewares\\Library");
     if (!WriteText(pathconfig::JoinPath(fixture.Path(), L"PortableProject.ioc"),
                    "Mcu.CPN=STM32F407VET6\r\nProjectManager.TargetToolchain=CMake\r\nProjectManager.ToolChainLocation=GeneratedCMake\r\n") ||
-        !WriteText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), "set(CMAKE_PROJECT_NAME PortableProject)\n") ||
+        !WriteText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"),
+                   "set(CMAKE_PROJECT_NAME PortableProject)\n"
+                   "enable_language(C ASM)\n"
+                   "add_executable(${CMAKE_PROJECT_NAME})\n"
+                   "add_subdirectory(cmake/stm32cubemx)\n") ||
         !WriteText(appSource, "void app(void) {}\n") || !WriteText(bspSource, "void driver(void) {}\n") ||
         !WriteText(pathconfig::JoinPath(appInclude, L"app.h"), "#pragma once\n") ||
         !WriteText(pathconfig::JoinPath(libraryDirectory, L"placeholder.txt"), "fixture\n")) {
@@ -175,8 +179,37 @@ int main() {
         return Fail(13, "settings preservation or migration failed");
     std::string writtenPresets;
     if (!ReadText(workspace.presetsPath, writtenPresets) || writtenPresets.find("STARM_CLANG_PATH") != std::string::npos ||
-        writtenPresets.find("-Wno-unknown-attributes") == std::string::npos || writtenPresets.find("$penv{PATH}") == std::string::npos)
+        writtenPresets.find("-Wno-unknown-attributes") != std::string::npos || writtenPresets.find("$penv{PATH}") == std::string::npos)
         return Fail(24, "CMake local preset does not provide the expected Clang environment");
+    std::string compilerCompat, configuredCmakeLists;
+    const std::wstring compilerCompatPath = pathconfig::JoinPath(cmakeRoot, L"cmake\\PathConfiguratorCompilerCompat.cmake");
+    if (!ReadText(compilerCompatPath, compilerCompat) ||
+        !ReadText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), configuredCmakeLists) ||
+        compilerCompat.find("CMAKE_C_COMPILER_ID STREQUAL \"Clang\"") == std::string::npos ||
+        compilerCompat.find("-Wno-unknown-attributes") == std::string::npos ||
+        configuredCmakeLists.find("PathConfiguratorCompilerCompat.cmake") == std::string::npos ||
+        configuredCmakeLists.find("PathConfiguratorCompilerCompat.cmake") > configuredCmakeLists.find("add_executable("))
+        return Fail(25, "Clang compatibility module was not generated before CMake targets");
+    if (!pathconfig::WriteConfiguration(workspace, tools, workspace.projectName, workspace.chipType, tools.svd, false, error) ||
+        !ReadText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), configuredCmakeLists) ||
+        configuredCmakeLists.find("PathConfiguratorCompilerCompat.cmake") != configuredCmakeLists.rfind("PathConfiguratorCompilerCompat.cmake"))
+        return Fail(26, "Clang compatibility module insertion is not idempotent");
+    const std::string compatInclude =
+        "# PathConfigurator: st-arm-clang 与 CubeMX CMSIS 的兼容规则\n"
+        "include(\"${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorCompilerCompat.cmake\")\n\n";
+    const size_t compatPosition = configuredCmakeLists.find(compatInclude);
+    const size_t targetPosition = configuredCmakeLists.find("add_executable(");
+    const size_t targetEnd = configuredCmakeLists.find('\n', targetPosition);
+    if (compatPosition == std::string::npos || targetPosition == std::string::npos || targetEnd == std::string::npos)
+        return Fail(27, "cannot prepare a legacy Clang compatibility include");
+    configuredCmakeLists.erase(compatPosition, compatInclude.size());
+    const size_t movedTargetPosition = configuredCmakeLists.find("add_executable(");
+    configuredCmakeLists.insert(configuredCmakeLists.find('\n', movedTargetPosition) + 1, compatInclude);
+    if (!WriteText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), configuredCmakeLists.c_str()) ||
+        !pathconfig::WriteConfiguration(workspace, tools, workspace.projectName, workspace.chipType, tools.svd, false, error) ||
+        !ReadText(pathconfig::JoinPath(cmakeRoot, L"CMakeLists.txt"), configuredCmakeLists) ||
+        configuredCmakeLists.find("PathConfiguratorCompilerCompat.cmake") > configuredCmakeLists.find("add_executable("))
+        return Fail(28, "legacy Clang compatibility include was not migrated");
 
     std::wstring relativeSource;
     if (!pathconfig::MakeToolchainRelativePath(workspace, appSource, false, relativeSource) || relativeSource != L"../App/Src/app.c")

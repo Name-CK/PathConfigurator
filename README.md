@@ -95,6 +95,10 @@ E:\Tools\OpenOCD
 
 本程序将这些本机路径保存到 `.vscode/settings.json` 和 `CMakeUserPresets.json`。这两个文件不应提交 Git；工程共用的 `tasks.json`、`launch.json`、`settings.example.json`、`project-config.json` 和 CMake 文件仍可正常提交。
 
+程序标题栏会显示当前版本。通过菜单 **帮助 -> 检查更新** 可查询 GitHub Releases 的最新稳定版本；发现新版本后可以直接打开下载页面。检查更新只读取 GitHub 的公开 Release 信息，不会上传工程文件或本机配置。
+
+对于 STM32H7，CubeMX/CMSIS 会把 st-arm-clang（Clang）识别为 GCC，并对一个 Clang 不支持的 CMSIS 属性给出兼容警告。配置器会在工程的 `cmake/PathConfiguratorCompilerCompat.cmake` 中仅对 Clang 关闭该警告，并在 CubeMX 源码子目录之前接入它。这不修改任何 CubeMX/CMSIS 头文件；该模块应提交 Git，后续重新生成代码不需要再次运行配置器。
+
 ## 工具路径与配置方式
 
 也可以双击 `.vscode/PathConfigurator.exe`，或在终端指定工程目录：
@@ -207,12 +211,14 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/PathConfiguratorProject.cmake")
 
 这三个文件属于工程构建规则，应提交 Git。新增或删除递归目录内的源文件后，重新执行 CMake Configure。
 
+首次确认工具链配置还会生成 `cmake/PathConfiguratorCompilerCompat.cmake`，并在同一目录的 `CMakeLists.txt` 中于 `add_executable(...)` 与 `add_subdirectory(cmake/stm32cubemx)` 之前加入一次 `include(...)`。它仅在 st-arm-clang/Clang 下抑制 CubeMX H7 CMSIS 的 `optimize("Os")` 兼容警告，不改动 CMSIS 头文件；这个文件同样应提交 Git。
+
 ## 程序读写范围
 
 | 类型 | 文件或位置 |
 | --- | --- |
 | 读取 | 工程 `.ioc`、CMakeLists.txt、`.vscode/settings.json`、`.vscode/settings.example.json`、用户默认配置、STM32CubeCLT 注册表项 |
-| 写入 | `.vscode/settings.json`、`CMakeUserPresets.json`、`project-config.json`、`cmake/PathConfiguratorProject.cmake` |
+| 写入 | `.vscode/settings.json`、`CMakeUserPresets.json`、`project-config.json`、`cmake/PathConfiguratorProject.cmake`、`cmake/PathConfiguratorCompilerCompat.cmake` |
 | 首次保存目标配置时修改 | CMakeLists.txt：只补入一次 `include(...)` |
 | 不修改 | 系统环境变量、`.ioc`、CubeMX 生成的源代码、OpenOCD 配置文件、固件内容 |
 
@@ -226,6 +232,8 @@ PathConfigurator.exe /workspace <STM32工程目录>
 PathConfigurator.exe /validate <STM32工程目录>
 PathConfigurator.exe /help
 ```
+
+发布新版本时，请同步修改 `src/main.cpp` 中的 `kAppVersion`，创建对应的 Git 标签（例如 `v1.0.1`），并将构建产物上传到 GitHub Release。
 
 `/validate` 只验证工程 `.vscode/settings.json`，不会修改文件。GUI 正常关闭和配置完成均会返回退出码 `0`；配置错误、工程不符合条件或验证失败会返回非零退出码，便于 VS Code 任务判断结果。
 
