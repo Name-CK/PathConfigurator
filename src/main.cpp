@@ -1133,17 +1133,17 @@ namespace
 			AppendMenuW(g_app.menu, MF_POPUP, reinterpret_cast<UINT_PTR>(helpMenu), L"帮助(&H)");
 			SetMenu(hwnd, g_app.menu);
 			HWND title = CreateWindowW(L"STATIC", (g_app.workspace.projectLabel + L"  STM32 项目配置").c_str(), WS_CHILD | WS_VISIBLE,
-				Ui(26), Ui(18), Ui(840), Ui(30), hwnd, nullptr, nullptr, nullptr);
+				Ui(14), Ui(10), Ui(650), Ui(30), hwnd, nullptr, nullptr, nullptr);
 			g_app.updateLink = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_NOTIFY | SS_RIGHT,
-				Ui(690), Ui(20), Ui(180), Ui(26), hwnd, reinterpret_cast<HMENU>(ID_UPDATE_LINK), nullptr, nullptr);
+				Ui(675), Ui(13), Ui(220), Ui(24), hwnd, reinterpret_cast<HMENU>(ID_UPDATE_LINK), nullptr, nullptr);
 			HWND subtitle = CreateWindowW(L"STATIC", (L"项目：" + g_app.projectName + L"    芯片：" + g_app.chipType).c_str(),
-				WS_CHILD | WS_VISIBLE, Ui(27), Ui(48), Ui(840), Ui(22), hwnd, nullptr, nullptr, nullptr);
+				WS_CHILD | WS_VISIBLE, Ui(14), Ui(40), Ui(880), Ui(20), hwnd, nullptr, nullptr, nullptr);
 			SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(g_app.titleFont), TRUE);
 			ApplyModernTheme(g_app.updateLink, g_app.font);
 			ApplyModernTheme(subtitle, g_app.font);
 
 			g_app.pageTab = CreateWindowExW(0, WC_TABCONTROLW, nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-				Ui(20), Ui(82), Ui(870), Ui(500), hwnd, reinterpret_cast<HMENU>(ID_PAGE_TAB), nullptr, nullptr);
+				Ui(10), Ui(66), Ui(892), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_PAGE_TAB), nullptr, nullptr);
 			TCITEMW toolTab{};
 			toolTab.mask = TCIF_TEXT;
 			toolTab.pszText = const_cast<wchar_t*>(L"工具链配置");
@@ -1154,89 +1154,91 @@ namespace
 			TabCtrl_InsertItem(g_app.pageTab, 1, &targetTab);
 			ApplyModernTheme(g_app.pageTab, g_app.font);
 
-			int y = Ui(125);
+			constexpr int toolLeft = 14;
+			constexpr int toolEditX = 150;
+			constexpr int toolEditWidth = 635;
+			constexpr int toolBrowseX = 797;
+			constexpr int toolBrowseWidth = 98;
+			int y = Ui(111);
 			for (int i = 0; i < 4; ++i)
 			{
-				HWND label = CreateWindowW(L"STATIC", Labels[i], WS_CHILD | WS_VISIBLE, Ui(27), y + Ui(5), Ui(136), Ui(22), hwnd, nullptr, nullptr, nullptr);
+				HWND label = CreateWindowW(L"STATIC", Labels[i], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
 				g_app.edits[i] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(i).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-					Ui(171), y, Ui(600), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_CMAKE + i), nullptr, nullptr);
+					Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_CMAKE + i), nullptr, nullptr);
 				HWND browse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					Ui(784), y, Ui(85), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + i), nullptr, nullptr);
+					Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + i), nullptr, nullptr);
 				ApplyModernTheme(label, g_app.font); ApplyModernTheme(g_app.edits[i], g_app.font); ApplyModernTheme(browse, g_app.font);
 				AddToolPageControl(label); AddToolPageControl(g_app.edits[i]); AddToolPageControl(browse);
-				y += Ui(45);
+				y += Ui(39);
 			}
-			HWND svdLabel = CreateWindowW(L"STATIC", Labels[7], WS_CHILD | WS_VISIBLE, Ui(27), y + Ui(5), Ui(136), Ui(22), hwnd, nullptr, nullptr, nullptr);
+			HWND svdLabel = CreateWindowW(L"STATIC", Labels[7], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.edits[7] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(7).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-				Ui(171), y, Ui(600), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_SVD), nullptr, nullptr);
+				Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_SVD), nullptr, nullptr);
 			HWND svdBrowse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(784), y, Ui(85), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 7), nullptr, nullptr);
+				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 7), nullptr, nullptr);
 			ApplyModernTheme(svdLabel, g_app.font); ApplyModernTheme(g_app.edits[7], g_app.font); ApplyModernTheme(svdBrowse, g_app.font);
 			AddToolPageControl(svdLabel); AddToolPageControl(g_app.edits[7]); AddToolPageControl(svdBrowse);
-			y += Ui(45);
-			HWND ocdLabel = CreateWindowW(L"STATIC", Labels[4], WS_CHILD | WS_VISIBLE, Ui(27), y + Ui(5), Ui(136), Ui(22), hwnd, nullptr, nullptr, nullptr);
+			y += Ui(39);
+			HWND ocdLabel = CreateWindowW(L"STATIC", Labels[4], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(126), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.edits[4] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(4).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-				Ui(171), y, Ui(600), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD), nullptr, nullptr);
+				Ui(toolEditX), y, Ui(toolEditWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD), nullptr, nullptr);
 			HWND ocdBrowse = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(784), y, Ui(85), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 4), nullptr, nullptr);
+				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 4), nullptr, nullptr);
 			ApplyModernTheme(ocdLabel, g_app.font); ApplyModernTheme(g_app.edits[4], g_app.font); ApplyModernTheme(ocdBrowse, g_app.font);
 			AddToolPageControl(ocdLabel); AddToolPageControl(g_app.edits[4]); AddToolPageControl(ocdBrowse);
-			y += Ui(45);
-			HWND interfaceLabel = CreateWindowW(L"STATIC", Labels[5], WS_CHILD | WS_VISIBLE, Ui(27), y + Ui(5), Ui(76), Ui(22), hwnd, nullptr, nullptr, nullptr);
+			y += Ui(39);
+			HWND interfaceLabel = CreateWindowW(L"STATIC", Labels[5], WS_CHILD | WS_VISIBLE, Ui(toolLeft), y + Ui(5), Ui(76), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.edits[5] = CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-				Ui(110), y, Ui(230), Ui(150), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD_INTERFACE), nullptr, nullptr);
+				Ui(101), y, Ui(238), Ui(150), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD_INTERFACE), nullptr, nullptr);
 			g_app.openocdConfigBrowse[0] = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(350), y, Ui(85), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 5), nullptr, nullptr);
-			HWND targetLabel = CreateWindowW(L"STATIC", Labels[6], WS_CHILD | WS_VISIBLE, Ui(450), y + Ui(5), Ui(116), Ui(22), hwnd, nullptr, nullptr, nullptr);
+				Ui(350), y, Ui(98), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 5), nullptr, nullptr);
+			HWND targetLabel = CreateWindowW(L"STATIC", Labels[6], WS_CHILD | WS_VISIBLE, Ui(465), y + Ui(5), Ui(112), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.edits[6] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", InitialValue(6).c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-				Ui(575), y, Ui(200), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD_TARGET), nullptr, nullptr);
+				Ui(588), y, Ui(197), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_OPENOCD_TARGET), nullptr, nullptr);
 			g_app.openocdConfigBrowse[1] = CreateWindowW(L"BUTTON", L"选择...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(784), y, Ui(85), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 6), nullptr, nullptr);
+				Ui(toolBrowseX), y, Ui(toolBrowseWidth), Ui(28), hwnd, reinterpret_cast<HMENU>(ID_BROWSE_BASE + 6), nullptr, nullptr);
 			ApplyModernTheme(interfaceLabel, g_app.font); ApplyModernTheme(g_app.edits[5], g_app.font); ApplyModernTheme(g_app.openocdConfigBrowse[0], g_app.font);
 			ApplyModernTheme(targetLabel, g_app.font); ApplyModernTheme(g_app.edits[6], g_app.font); ApplyModernTheme(g_app.openocdConfigBrowse[1], g_app.font);
 			AddToolPageControl(interfaceLabel); AddToolPageControl(g_app.edits[5]); AddToolPageControl(g_app.openocdConfigBrowse[0]);
 			AddToolPageControl(targetLabel); AddToolPageControl(g_app.edits[6]); AddToolPageControl(g_app.openocdConfigBrowse[1]);
 			HWND clear = CreateWindowW(L"BUTTON", L"清空", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(27), Ui(510), Ui(115), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_CLEAR), nullptr, nullptr);
-			HWND ex = CreateWindowW(L"BUTTON", g_app.workspace.hasExample ? L"确认并生成（从 example）" : L"确认并生成", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-				Ui(488), Ui(510), Ui(g_app.workspace.hasExample ? 190 : 150), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_SAVE_EXAMPLE), nullptr, nullptr);
-			HWND settings = CreateWindowW(L"BUTTON", g_app.workspace.hasExample ? L"确认并生成（从 settings）" : L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(g_app.workspace.hasExample ? 690 : 650), Ui(510), Ui(g_app.workspace.hasExample ? 190 : 150), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_SAVE_SETTINGS), nullptr, nullptr);
+				Ui(toolLeft), Ui(388), Ui(115), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_CLEAR), nullptr, nullptr);
+			HWND ex = CreateWindowW(L"BUTTON", g_app.workspace.hasExample ? L"重建" : L"生成", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+				Ui(g_app.workspace.hasExample ? 650 : 720), Ui(388), Ui(g_app.workspace.hasExample ? 115 : 175), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_SAVE_EXAMPLE), nullptr, nullptr);
+			HWND settings = CreateWindowW(L"BUTTON", g_app.workspace.hasExample ? L"修改" : L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+				Ui(g_app.workspace.hasExample ? 780 : 820), Ui(388), Ui(g_app.workspace.hasExample ? 115 : 75), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_SAVE_SETTINGS), nullptr, nullptr);
 			ApplyModernTheme(clear, g_app.font); ApplyModernTheme(ex, g_app.font); ApplyModernTheme(settings, g_app.font);
 			AddToolPageControl(clear); AddToolPageControl(ex); AddToolPageControl(settings);
 
-			HWND categoryLabel = CreateWindowW(L"STATIC", L"配置类别", WS_CHILD | WS_VISIBLE, Ui(27), Ui(126), Ui(100), Ui(22), hwnd, nullptr, nullptr, nullptr);
+			HWND categoryLabel = CreateWindowW(L"STATIC", L"配置类别", WS_CHILD | WS_VISIBLE, Ui(14), Ui(112), Ui(96), Ui(22), hwnd, nullptr, nullptr, nullptr);
 			g_app.targetCategory = CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-				Ui(130), Ui(121), Ui(250), Ui(160), hwnd, reinterpret_cast<HMENU>(ID_TARGET_CATEGORY), nullptr, nullptr);
+				Ui(120), Ui(107), Ui(265), Ui(160), hwnd, reinterpret_cast<HMENU>(ID_TARGET_CATEGORY), nullptr, nullptr);
 			const wchar_t* categories[] = {L"目标文件 / 文件夹", L"头文件目录", L"编译宏", L"链接目录"};
 			for (const wchar_t* category : categories) SendMessageW(g_app.targetCategory, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(category));
 			SendMessageW(g_app.targetCategory, CB_SETCURSEL, TargetSources, 0);
 			g_app.targetList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
 				WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_EDITLABELS,
-				Ui(27), Ui(167), Ui(842), Ui(310), hwnd, nullptr, nullptr, nullptr);
+				Ui(14), Ui(149), Ui(881), Ui(220), hwnd, nullptr, nullptr, nullptr);
 			LVCOLUMNW valueColumn{};
 			valueColumn.mask = LVCF_TEXT | LVCF_WIDTH;
 			valueColumn.pszText = const_cast<wchar_t*>(L"项目根目录相对路径 / 宏");
-			valueColumn.cx = Ui(838);
+			valueColumn.cx = Ui(877);
 			ListView_InsertColumn(g_app.targetList, 0, &valueColumn);
 			ListView_SetExtendedListViewStyle(g_app.targetList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 			g_app.targetAddFile = CreateWindowW(L"BUTTON", L"添加文件...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(27), Ui(510), Ui(116), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_TARGET_ADD_FILE), nullptr, nullptr);
+				Ui(14), Ui(388), Ui(116), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_TARGET_ADD_FILE), nullptr, nullptr);
 			g_app.targetAddFolder = CreateWindowW(L"BUTTON", L"添加文件夹...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(153), Ui(510), Ui(128), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_TARGET_ADD_FOLDER), nullptr, nullptr);
+				Ui(140), Ui(388), Ui(128), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_TARGET_ADD_FOLDER), nullptr, nullptr);
 			g_app.targetDelete = CreateWindowW(L"BUTTON", L"删除选中项", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-				Ui(488), Ui(510), Ui(135), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_TARGET_DELETE), nullptr, nullptr);
+				Ui(505), Ui(388), Ui(135), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_TARGET_DELETE), nullptr, nullptr);
 			g_app.targetSave = CreateWindowW(L"BUTTON", L"保存 CMake 目标配置", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-				Ui(638), Ui(510), Ui(231), Ui(34), hwnd, reinterpret_cast<HMENU>(ID_TARGET_SAVE), nullptr, nullptr);
+				Ui(652), Ui(388), Ui(243), Ui(32), hwnd, reinterpret_cast<HMENU>(ID_TARGET_SAVE), nullptr, nullptr);
 			ApplyModernTheme(categoryLabel, g_app.font); ApplyModernTheme(g_app.targetCategory, g_app.font); ApplyModernTheme(g_app.targetList, g_app.font);
 			ApplyModernTheme(g_app.targetAddFile, g_app.font); ApplyModernTheme(g_app.targetAddFolder, g_app.font);
 			ApplyModernTheme(g_app.targetDelete, g_app.font); ApplyModernTheme(g_app.targetSave, g_app.font);
 			AddTargetPageControl(categoryLabel); AddTargetPageControl(g_app.targetCategory); AddTargetPageControl(g_app.targetList);
 			AddTargetPageControl(g_app.targetAddFile); AddTargetPageControl(g_app.targetAddFolder); AddTargetPageControl(g_app.targetDelete); AddTargetPageControl(g_app.targetSave);
 
-			g_app.status = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, Ui(27), Ui(460), Ui(850), Ui(26), hwnd, nullptr, nullptr, nullptr);
-			ApplyModernTheme(g_app.status, g_app.font);
-			AddToolPageControl(g_app.status);
 			PushControls();
 			UpdateOpenOcdConfigControls();
 			SwitchPage();
@@ -1447,8 +1449,8 @@ namespace
 		AdjustWindowRectEx(&desiredClient, windowStyle, TRUE, WS_EX_APPWINDOW);
 		const int windowWidth = desiredClient.right - desiredClient.left;
 		HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, (g_app.workspace.projectLabel + L" - STM32 工具链配置").c_str(),
-																windowStyle,
-																CW_USEDEFAULT, CW_USEDEFAULT, windowWidth, Ui(680), nullptr, nullptr, instance, nullptr);
+										windowStyle,
+										CW_USEDEFAULT, CW_USEDEFAULT, windowWidth, Ui(520), nullptr, nullptr, instance, nullptr);
 		if (!hwnd)
 			return 1;
 		ShowWindow(hwnd, SW_SHOW);
