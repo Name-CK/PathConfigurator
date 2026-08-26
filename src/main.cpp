@@ -546,8 +546,10 @@ namespace
 			return;
 		MergeSharedTools(g_app.tools, defaults, true);
 		ApplyOpenOcdDefaults();
+		const bool foundSvd = TryAutoFillSvdFromCurrentCubeClt();
 		PushControls();
-		Status(L"已读取默认配置；SVD 与目标配置文件保持当前工程设置。");
+		Status(foundSvd ? L"已读取默认配置，并从 STM32CubeCLT 自动匹配当前芯片的 SVD 文件。"
+			: L"已读取默认配置；未找到当前芯片的 SVD，保留现有 SVD 与目标配置文件。");
 	}
 
 	void SaveUserDefaultsFromMenu(HWND owner)
@@ -598,9 +600,10 @@ namespace
 		ofn.hwndOwner = owner;
 		ofn.lpstrFile = path;
 		ofn.nMaxFile = static_cast<DWORD>(ARRAY_SIZE(path));
-		std::wstring filter = expectedName;
+		const bool isSvd = _wcsicmp(expectedName, L".svd") == 0;
+		std::wstring filter = isSvd ? L"SVD 文件 (*.svd)" : expectedName;
 		filter.push_back(L'\0');
-		filter += expectedName;
+		filter += isSvd ? L"*.svd" : expectedName;
 		filter.push_back(L'\0');
 		filter += L"所有文件";
 		filter.push_back(L'\0');

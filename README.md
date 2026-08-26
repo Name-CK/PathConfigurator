@@ -129,6 +129,8 @@ E:\Tools\OpenOCD
 3. Windows 注册表中检测到的 STM32CubeCLT，程序会先询问是否补充。
 4. 用户在界面中手动选择的路径。
 
+默认配置只保存跨工程通用的工具路径。读取默认配置后，若当前工程尚未配置 SVD，程序会根据 `.ioc` 中的芯片型号和已识别的 STM32CubeCLT 自动匹配 SVD；OpenOCD target 同样会按当前芯片自动选择，仍可在界面中手动修改。
+
 “配置”菜单提供：
 
 - `保存为默认配置`：保存 CMake、Ninja、starm-clang、GDB、OpenOCD 和调试器 interface，供其他 STM32 工程复用。

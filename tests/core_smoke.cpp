@@ -129,9 +129,10 @@ int main() {
     tools.openocdInterface = L"cmsis-dap";
     tools.openocdTarget = L"stm32f4x.cfg";
     tools.svd = pathconfig::JoinPath(cubeRoot, L"STMicroelectronics_CMSIS_SVD\\STM32F407.svd");
+    const std::wstring h7Svd = pathconfig::JoinPath(cubeRoot, L"STMicroelectronics_CMSIS_SVD\\STM32H723.svd");
     if (!WriteText(pathconfig::JoinPath(cubeRoot, L"STM32CubeCLT_metadata.bat"), "@rem fixture\n") ||
         !WriteText(tools.cmake, "") || !WriteText(tools.ninja, "") || !WriteText(tools.starmClang, "") ||
-        !WriteText(tools.gdb, "") || !WriteText(tools.svd, "") || !WriteText(tools.openocd, "") ||
+        !WriteText(tools.gdb, "") || !WriteText(tools.svd, "") || !WriteText(h7Svd, "") || !WriteText(tools.openocd, "") ||
         !WriteText(pathconfig::JoinPath(openOcdRoot, L"scripts\\interface\\cmsis-dap.cfg"), "# fixture\n") ||
         !WriteText(pathconfig::JoinPath(openOcdRoot, L"scripts\\target\\stm32f4x.cfg"), "# fixture\n") ||
         !WriteText(pathconfig::JoinPath(openOcdRoot, L"scripts\\target\\stm32h7x.cfg"), "# fixture\n")) {
@@ -153,13 +154,14 @@ int main() {
         cubeTools.cmake != tools.cmake || cubeTools.gdb != tools.gdb)
         return Fail(8, "CubeCLT detection failed");
     if (pathconfig::FindSvdForChip(cubeRoot, L"STM32F407VET6") != tools.svd ||
+        pathconfig::FindSvdForChip(cubeRoot, L"STM32H723ZGT6") != h7Svd ||
         pathconfig::FindOpenOcdTargetForChip(tools.openocd, L"STM32F407VET6") != L"stm32f4x.cfg" ||
         pathconfig::FindOpenOcdTargetForChip(tools.openocd, L"STM32H723ZET6") != L"stm32h7x.cfg")
         return Fail(9, "SVD or OpenOCD target detection failed");
     if (!pathconfig::ValidateTools(tools, true).ok) return Fail(10, "valid fixture tools failed validation");
 
     const std::wstring settingsPath = pathconfig::JoinPath(fixture.Path(), L".vscode\\settings.json");
-    if (!WriteText(settingsPath, "{\n  \"CustomCfg.openocdScripts\": \"obsolete\",\n  \"personal.setting\": \"keep\"\n}\n"))
+    if (!WriteText(settingsPath, "{\n  \"cmake.configureSettings\": {\n    \"STARM_CLANG_PATH\": \"obsolete\"\n  },\n  \"CustomCfg.openocdScripts\": \"obsolete\",\n  \"personal.setting\": \"keep\"\n}\n"))
         return Fail(11, "cannot create settings fixture");
     if (!pathconfig::WriteConfiguration(workspace, tools, workspace.projectName, workspace.chipType, tools.svd, false, error))
         return Fail(12, "cannot write portable VS Code configuration");
@@ -168,8 +170,13 @@ int main() {
     std::string writtenSettings;
     if (!pathconfig::LoadSettings(settingsPath, writtenTools, writtenProject, writtenChip, writtenSvd, writtenSettings) ||
         writtenTools.openocdInterface != L"cmsis-dap" || writtenTools.openocdTarget != L"stm32f4x.cfg" ||
-        writtenSettings.find("personal.setting") == std::string::npos || writtenSettings.find("CustomCfg.openocdScripts") != std::string::npos)
+        writtenSettings.find("personal.setting") == std::string::npos || writtenSettings.find("CustomCfg.openocdScripts") != std::string::npos ||
+        writtenSettings.find("STARM_CLANG_PATH") != std::string::npos)
         return Fail(13, "settings preservation or migration failed");
+    std::string writtenPresets;
+    if (!ReadText(workspace.presetsPath, writtenPresets) || writtenPresets.find("STARM_CLANG_PATH") != std::string::npos ||
+        writtenPresets.find("-Wno-unknown-attributes") == std::string::npos || writtenPresets.find("$penv{PATH}") == std::string::npos)
+        return Fail(24, "CMake local preset does not provide the expected Clang environment");
 
     std::wstring relativeSource;
     if (!pathconfig::MakeToolchainRelativePath(workspace, appSource, false, relativeSource) || relativeSource != L"../App/Src/app.c")

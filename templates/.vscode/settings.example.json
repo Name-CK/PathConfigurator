@@ -7,7 +7,6 @@
   "cmake.configureOnOpen": false,
   "cmake.configureSettings": {
     "CMAKE_MAKE_PROGRAM": "C:/your/path/ninja.exe",
-    "STARM_CLANG_PATH": "C:/your/path/starm-clang.exe",
     "CMAKE_TOOLCHAIN_FILE": "${workspaceFolder}/ToolChain/cmake/starm-clang.cmake"
   },
   "cmake.environment": {

@@ -173,6 +173,15 @@ void RemoveJsonString(std::string& document, const std::string& key) {
     document.erase(begin, end - begin);
 }
 
+void RemoveAllJsonStrings(std::string& document, const std::string& key) {
+    const std::string needle = "\"" + key + "\"";
+    while (document.find(needle) != std::string::npos) {
+        const size_t sizeBefore = document.size();
+        RemoveJsonString(document, key);
+        if (document.size() == sizeBefore) break;
+    }
+}
+
 bool FindJsonArray(const std::string& document, const char* key, size_t& begin, size_t& end) {
     const std::string needle = std::string("\"") + key + "\"";
     size_t p = 0;
@@ -1065,17 +1074,20 @@ bool WriteConfiguration(const WorkspaceInfo& info, const ToolPaths& tools, const
         {"cmake.sourceDirectory", &cmakeToolchain}, {"cmake.buildDirectory", &cmakeBuild}, {"CMAKE_TOOLCHAIN_FILE", &cmakeToolchainFile},
         {"C_Cpp.default.compileCommands", &cmakeCompileCommands}
     };
-    RemoveJsonString(settings, "CustomCfg.openocdScripts");
+    RemoveAllJsonStrings(settings, "CustomCfg.openocdScripts");
+    // CubeMX 的 starm-clang.cmake 通过 PATH 查找 starm-clang，并不读取这个缓存变量。
+    // 清理旧模板或已有 settings 中的值，避免 CMake 报“变量未使用”。
+    RemoveAllJsonStrings(settings, "STARM_CLANG_PATH");
     for (const auto& item : values) ReplaceJsonString(settings, item.key, *item.value);
     ReplaceJsonString(settings, "CMAKE_MAKE_PROGRAM", tools.ninja);
-    ReplaceJsonString(settings, "STARM_CLANG_PATH", tools.starmClang);
     ReplaceJsonString(settings, "cmake.useCMakePresets", L"auto");
     ReplaceJsonString(settings, "PATH", cmakeEnvironmentPath);
     if (!WriteBytesAtomic(info.settingsPath, settings)) { error = L"写入 .vscode/settings.json 失败"; return false; }
     std::string presets = "{\n  \"version\": 3,\n  \"configurePresets\": [\n";
-    const std::wstring names[] = {L"Debug-Local", L"Release-Local"};
+    const std::wstring presetPath = SlashPath(GetParentPath(tools.ninja)) + L";" +
+        SlashPath(GetParentPath(tools.starmClang)) + L";" + SlashPath(GetParentPath(tools.gdb)) + L";$penv{PATH}";
     for (int i = 0; i < 2; ++i) {
-        presets += "    {\"name\": \"" + std::string(i ? "Release-Local" : "Debug-Local") + "\", \"inherits\": \"" + std::string(i ? "Release" : "Debug") + "\", \"binaryDir\": \"${sourceDir}/build/" + std::string(i ? "Release" : "Debug") + "\", \"cacheVariables\": {\"CMAKE_MAKE_PROGRAM\": \"" + JsonEscape(tools.ninja) + "\", \"STARM_CLANG_PATH\": \"" + JsonEscape(tools.starmClang) + "\"}}";
+        presets += "    {\"name\": \"" + std::string(i ? "Release-Local" : "Debug-Local") + "\", \"inherits\": \"" + std::string(i ? "Release" : "Debug") + "\", \"binaryDir\": \"${sourceDir}/build/" + std::string(i ? "Release" : "Debug") + "\", \"cacheVariables\": {\"CMAKE_MAKE_PROGRAM\": \"" + JsonEscape(tools.ninja) + "\", \"CMAKE_C_FLAGS\": \"-Wno-unknown-attributes\", \"CMAKE_CXX_FLAGS\": \"-Wno-unknown-attributes\"}, \"environment\": {\"PATH\": \"" + JsonEscape(presetPath) + "\"}}";
         presets += i ? "\n" : ",\n";
     }
     presets += "  ],\n  \"buildPresets\": [{\"name\": \"Debug-Local\", \"configurePreset\": \"Debug-Local\"}, {\"name\": \"Release-Local\", \"configurePreset\": \"Release-Local\"}]\n}\n";
